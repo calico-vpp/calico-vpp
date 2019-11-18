@@ -8,7 +8,6 @@ require (
 	github.com/containernetworking/plugins v0.8.2
 	github.com/coreos/etcd v3.3.17+incompatible
 	github.com/dgryski/go-farm v0.0.0-20191112170834-c2139c5d712b // indirect
-	github.com/eapache/channels v1.1.0 // indirect
 	github.com/eapache/queue v1.1.0 // indirect
 	github.com/gogo/protobuf v1.3.1
 	github.com/golang/protobuf v1.3.2
@@ -20,7 +19,7 @@ require (
 	github.com/pborman/uuid v0.0.0-20150603214016-ca53cad383ca // indirect
 	github.com/projectcalico/cni-plugin v3.8.4+incompatible // indirect
 	github.com/projectcalico/go-yaml v0.0.0-20161201183616-955bc3e451ef // indirect
-	github.com/projectcalico/libcalico-go v1.7.2-0.20191112223013-362a04d5e109
+	github.com/projectcalico/libcalico-go v1.7.3
 	github.com/sirupsen/logrus v1.4.2
 	github.com/spf13/viper v1.5.0 // indirect
 	github.com/vishvananda/netlink v1.0.0
@@ -36,3 +35,7 @@ require (
 	k8s.io/client-go v12.0.0+incompatible
 	k8s.io/utils v0.0.0-20191114181534-f635c9d740df // indirect
 )
+
+replace github.com/projectcalico/libcalico-go v1.7.3 => github.com/projectcalico/libcalico-go v1.7.2-0.20191112223013-362a04d5e109
+
+replace github.com/osrg/gobgp v2.0.0+incompatible => github.com/osrg/gobgp v0.0.0-20191101114856-a42a1a5f6bf0

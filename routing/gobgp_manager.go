@@ -30,11 +30,10 @@ import (
 	etcd "github.com/coreos/etcd/client"
 	"github.com/coreos/etcd/pkg/transport"
 	bgpapi "github.com/osrg/gobgp/api"
-	bgpconfig "github.com/osrg/gobgp/tools/config"
+	bgpconfig "github.com/osrg/gobgp/pkg/config"
 	bgp "github.com/osrg/gobgp/pkg/packet/bgp"
 	bgpserver "github.com/osrg/gobgp/pkg/server"
-	bgptable "github.com/osrg/gobgp/internal/pkg/table"
-	calicoapi "github.com/projectcalico/libcalico-go/lib/api"
+	calicoapi "github.com/projectcalico/libcalico-go/lib/apis/v1"
 	calicocli "github.com/projectcalico/libcalico-go/lib/client"
 	"github.com/projectcalico/libcalico-go/lib/numorstring"
 	calicoscope "github.com/projectcalico/libcalico-go/lib/scope"
@@ -556,7 +555,7 @@ func etcdKeyToPrefix(key string) string {
 	return strings.Replace(path[len(path)-1], "-", "/", 1)
 }
 
-func (s *Server) makePath(prefix string, isWithdrawal bool) (*bgptable.Path, error) {
+func (s *Server) makePath(prefix string, isWithdrawal bool) (*bgpapi.Path, error) {
 	_, ipNet, err := net.ParseCIDR(prefix)
 	if err != nil {
 		return nil, err
@@ -570,19 +569,28 @@ func (s *Server) makePath(prefix string, isWithdrawal bool) (*bgptable.Path, err
 	}
 
 	var nlri bgp.AddrPrefixInterface
+	var family bgpapi.Family
 	attrs := []bgp.PathAttributeInterface{
 		bgp.NewPathAttributeOrigin(0),
 	}
 
 	if v4 {
 		nlri = bgp.NewIPAddrPrefix(uint8(masklen), p.String())
+		family = Family_AFI_IP
 		attrs = append(attrs, bgp.NewPathAttributeNextHop(s.ipv4.String()))
 	} else {
 		nlri = bgp.NewIPv6AddrPrefix(uint8(masklen), p.String())
+		family = Family_AFI_IP6
 		attrs = append(attrs, bgp.NewPathAttributeMpReachNLRI(s.ipv6.String(), []bgp.AddrPrefixInterface{nlri}))
 	}
 
-	return bgptable.NewPath(nil, nlri, isWithdrawal, attrs, time.Now(), false), nil
+	return &bgpapi.Path{
+		Nlri: nlri,
+		IsWithdraw: isWithdrawal,
+		Pattrs: attrs,
+		Age: time.Now(),
+		Family: family,
+	}, nil
 }
 
 // getAssignedPrefixes retrives prefixes assigned to the node and returns them as a

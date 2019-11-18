@@ -47,8 +47,8 @@ import (
 	"github.com/projectcalico/libcalico-go/lib/backend/model"
 	"github.com/projectcalico/libcalico-go/lib/numorstring"
 
-	svbgptable "github.com/osrg/gobgp/internal/pkg/table"
-	svbgpconfig "github.com/osrg/gobgp/tools/config"
+	svbgptable "github.com/osrg/gobgp/api"
+	svbgpconfig "github.com/osrg/gobgp/pkg/config"
 	log "github.com/sirupsen/logrus"
 	kapiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
