@@ -21,20 +21,17 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 	"syscall"
-	"time"
 
-	etcd "github.com/coreos/etcd/client"
-	"github.com/coreos/etcd/pkg/transport"
 	"github.com/golang/protobuf/ptypes"
 	"github.com/golang/protobuf/ptypes/any"
 	bgpapi "github.com/osrg/gobgp/api"
-	bgpconfig "github.com/osrg/gobgp/pkg/config"
-	bgp "github.com/osrg/gobgp/pkg/packet/bgp"
 	bgpserver "github.com/osrg/gobgp/pkg/server"
+	"github.com/pkg/errors"
 	calicoapi "github.com/projectcalico/libcalico-go/lib/apis/v1"
 	calicov3 "github.com/projectcalico/libcalico-go/lib/apis/v3"
+	backendapi "github.com/projectcalico/libcalico-go/lib/backend/api"
+	"github.com/projectcalico/libcalico-go/lib/backend/encap"
 	"github.com/projectcalico/libcalico-go/lib/backend/model"
 	calicocli "github.com/projectcalico/libcalico-go/lib/client"
 	calicocliv3 "github.com/projectcalico/libcalico-go/lib/clientv3"
@@ -50,23 +47,7 @@ import (
 // TODO: switch as much as possible to clientv3
 
 const (
-	NODENAME      = "NODENAME"
-	INTERVAL      = "BGPD_INTERVAL"
-	AS            = "AS"
-	CALICO_PREFIX = "/calico"
-	CALICO_BGP    = CALICO_PREFIX + "/bgp/v1"
-	CALICO_AGGR   = CALICO_PREFIX + "/ipam/v2/host"
-	CALICO_IPAM   = CALICO_PREFIX + "/v1/ipam"
-
-	IpPoolV4       = CALICO_IPAM + "/v4/pool"
-	GlobalBGP      = CALICO_BGP + "/global"
-	GlobalASN      = GlobalBGP + "/as_num"
-	GlobalNodeMesh = GlobalBGP + "/node_mesh"
-	GlobalLogging  = GlobalBGP + "/loglevel"
-	AllNodes       = CALICO_BGP + "/host"
-
-	PollingInterval    = 300
-	defaultDialTimeout = 30 * time.Second
+	NODENAME = "NODENAME"
 
 	aggregatedPrefixSetName = "aggregated"
 	hostPrefixSetName       = "host"
@@ -74,52 +55,19 @@ const (
 	RTPROT_GOBGP = 0x11
 )
 
+var (
+	bgpFamilyUnicastIPv4 = bgpapi.Family{Afi: bgpapi.Family_AFI_IP, Safi: bgpapi.Family_SAFI_UNICAST}
+	bgpFamilyUnicastIPv6 = bgpapi.Family{Afi: bgpapi.Family_AFI_IP6, Safi: bgpapi.Family_SAFI_UNICAST}
+)
+
 type IpamCache interface {
-	match(string) *ipPool
-	update(interface{}, bool) error
+	match(string) *model.IPPool
+	update(*model.KVPair, bool) error
 	sync() error
 }
 
 // VERSION is filled out during the build process (using git describe output)
 var VERSION string
-
-func underscore(ip string) string {
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case '.', ':':
-			return '_'
-		}
-		return r
-	}, ip)
-}
-
-func errorButKeyNotFound(err error) error {
-	if e, ok := err.(etcd.Error); ok && e.Code == etcd.ErrorCodeKeyNotFound {
-		return nil
-	}
-	return err
-}
-
-func getEtcdConfig(cfg *calicoapi.CalicoAPIConfig) (etcd.Config, error) {
-	var config etcd.Config
-	etcdcfg := cfg.Spec.EtcdConfig
-	etcdEndpoints := etcdcfg.EtcdEndpoints
-	if etcdEndpoints == "" {
-		etcdEndpoints = fmt.Sprintf("%s://%s", etcdcfg.EtcdScheme, etcdcfg.EtcdAuthority)
-	}
-	tls := transport.TLSInfo{
-		CAFile:   etcdcfg.EtcdCACertFile,
-		CertFile: etcdcfg.EtcdCertFile,
-		KeyFile:  etcdcfg.EtcdKeyFile,
-	}
-	t, err := transport.NewTransport(tls, defaultDialTimeout)
-	if err != nil {
-		return config, err
-	}
-	config.Endpoints = strings.Split(etcdEndpoints, ",")
-	config.Transport = t
-	return config, nil
-}
 
 // recursiveNexthopLookup returns bgpNexthop's actual nexthop
 // In GCE environment, the interface address is /32 and the BGP nexthop is
@@ -166,12 +114,14 @@ type Server struct {
 	t           tomb.Tomb
 	bgpServer   *bgpserver.BgpServer
 	client      *calicocli.Client
-	clientv3    *calicocliv3.Client
+	clientv3    calicocliv3.Interface
+	hasV4       bool
 	ipv4        net.IP
+	hasV6       bool
 	ipv6        net.IP
 	nodeName    string
 	ipam        IpamCache
-	reloadCh    chan []*bgpapi.Path
+	reloadCh    chan string
 	prefixReady chan int
 }
 
@@ -186,7 +136,7 @@ func NewServer() (*Server, error) {
 		return nil, err
 	}
 
-	node, err := calicoCliV3.Nodes().Get(context.Background(), nodeName)
+	node, err := calicoCliV3.Nodes().Get(context.Background(), nodeName, options.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -195,11 +145,12 @@ func NewServer() (*Server, error) {
 		return nil, fmt.Errorf("Calico is running in policy-only mode")
 	}
 	var ipv4, ipv6 net.IP
-	if ipnet := node.Spec.BGP.IPv4Address; ipnet != nil {
-		ipv4 = ipnet.IP
+	var hasV4, hasV6 bool = true, true
+	if ipv4, _, err = net.ParseCIDR(node.Spec.BGP.IPv4Address); err != nil {
+		hasV4 = false
 	}
-	if ipnet := node.Spec.BGP.IPv6Address; ipnet != nil {
-		ipv6 = ipnet.IP
+	if ipv6, _, err = net.ParseCIDR(node.Spec.BGP.IPv6Address); err != nil {
+		hasV6 = false
 	}
 
 	bgpServer := bgpserver.NewBgpServer()
@@ -209,9 +160,11 @@ func NewServer() (*Server, error) {
 		client:      calicoCli,
 		clientv3:    calicoCliV3,
 		nodeName:    nodeName,
+		hasV4:       hasV4,
 		ipv4:        ipv4,
+		hasV6:       hasV6,
 		ipv6:        ipv6,
-		reloadCh:    make(chan []*bgpapi.Path),
+		reloadCh:    make(chan string),
 		prefixReady: make(chan int),
 	}
 	return &server, nil
@@ -271,12 +224,10 @@ func (s *Server) Serve() {
 }
 
 func isCrossSubnet(gw net.IP, subnet net.IPNet) bool {
-	p := &ipPool{CIDR: subnet.String()}
-	result := !p.contain(gw.String() + "/32")
-	return result
+	return !subnet.Contains(gw)
 }
 
-func (s *Server) ipamUpdateHandler(pool *ipPool) error {
+func (s *Server) ipamUpdateHandler(pool *model.IPPool) error {
 	filter := &netlink.Route{
 		Protocol: RTPROT_GOBGP,
 	}
@@ -294,52 +245,72 @@ func (s *Server) ipamUpdateHandler(pool *ipPool) error {
 			continue
 		}
 		prefix := route.Dst.String()
-		if pool.contain(prefix) {
-			ipip := pool.IPIP != ""
-			if pool.Mode == "cross-subnet" && !isCrossSubnet(route.Gw, node.Spec.BGP.IPv4Address.Network().IPNet) {
+		inPool, err := contains(pool, prefix)
+		if err != nil {
+			return err
+		}
+		if inPool {
+			ipip := pool.IPIPMode != encap.Undefined
+			if pool.IPIPMode == encap.CrossSubnet && !isCrossSubnet(route.Gw, node.Spec.BGP.IPv4Address.Network().IPNet) {
 				ipip = false
 			}
 			if ipip {
-				i, err := net.InterfaceByName(pool.IPIP)
+				i, err := net.InterfaceByName(pool.IPIPInterface)
 				if err != nil {
 					return err
 				}
 				route.LinkIndex = i.Index
 				route.SetFlag(netlink.FLAG_ONLINK)
 			} else {
-				tbl, err := s.bgpServer.GetRib("", bgp.RF_IPv4_UC, []*bgpapi.LookupPrefix{
-					&bgpapi.LookupPrefix{
-						Prefix: prefix,
+				log.Println("listing paths")
+				err := s.bgpServer.ListPath(
+					context.Background(),
+					&bgpapi.ListPathRequest{
+						TableType: bgpapi.TableType_GLOBAL,
+						Name:      "",
+						Family:    &bgpFamilyUnicastIPv4,
+						Prefixes: []*bgpapi.TableLookupPrefix{
+							&bgpapi.TableLookupPrefix{
+								Prefix: prefix,
+							},
+						},
 					},
-				})
+					func(destination *bgpapi.Destination) {
+						log.Println("Got destination for prefix %s: %+v", prefix, destination)
+					},
+				)
 				if err != nil {
-					return err
+					return errors.Wrap(err, "error listing paths")
 				}
-				bests := tbl.Bests("")
-				if len(bests) == 0 {
-					log.Printf("no best for %s", prefix)
-					continue
-				}
-				best := bests[0]
-				if best.IsLocal() {
-					log.Printf("%s's best is local path", prefix)
-					continue
-				}
-				gw, err := recursiveNexthopLookup(best.GetNexthop())
-				if err != nil {
-					return err
-				}
-				route.Gw = gw
-				route.Flags = 0
-				rs, err := netlink.RouteGet(gw)
-				if err != nil {
-					return err
-				}
-				if len(rs) == 0 {
-					return fmt.Errorf("no route for path: %s", gw)
-				}
-				r := rs[0]
-				route.LinkIndex = r.LinkIndex
+
+				// var best *bgpapi.Path = nil
+				// for _, p := range dest.Paths {
+				// 	if p.Best && (best == nil || p)
+				// }
+				// if len(bests) == 0 {
+				// 	log.Printf("no best for %s", prefix)
+				// 	continue
+				// }
+				// best := bests[0]
+				// if best.IsLocal() {
+				// 	log.Printf("%s's best is local path", prefix)
+				// 	continue
+				// }
+				// gw, err := recursiveNexthopLookup(best.GetNexthop())
+				// if err != nil {
+				// 	return err
+				// }
+				// route.Gw = gw
+				// route.Flags = 0
+				// rs, err := netlink.RouteGet(gw)
+				// if err != nil {
+				// 	return err
+				// }
+				// if len(rs) == 0 {
+				// 	return fmt.Errorf("no route for path: %s", gw)
+				// }
+				// r := rs[0]
+				// route.LinkIndex = r.LinkIndex
 			}
 			return netlink.RouteReplace(&route)
 		}
@@ -348,7 +319,7 @@ func (s *Server) ipamUpdateHandler(pool *ipPool) error {
 }
 
 func (s *Server) getNodeASN() (numorstring.ASNumber, error) {
-	return getPeerASN(s.nodeName)
+	return s.getPeerASN(s.nodeName)
 }
 
 func (s *Server) getPeerASN(host string) (numorstring.ASNumber, error) {
@@ -382,63 +353,6 @@ func (s *Server) isMeshMode() (bool, error) {
 	return s.client.Config().GetNodeToNodeMesh()
 }
 
-// getMeshNeighborConfigs returns the list of mesh BGP neighbor configuration struct
-func (s *Server) getMeshNeighborConfigs() ([]*bgpconfig.Neighbor, error) {
-	globalASN, err := s.getNodeASN()
-	if err != nil {
-		return nil, err
-	}
-	nodes, err := s.client.Nodes().List(calicoapi.NodeMetadata{})
-	if err != nil {
-		return nil, err
-	}
-	ns := make([]*bgpconfig.Neighbor, 0, len(nodes.Items))
-	for _, node := range nodes.Items {
-		if node.Metadata.Name == os.Getenv(NODENAME) {
-			continue
-		}
-		peerASN := globalASN
-		spec := node.Spec.BGP
-		if spec == nil {
-			continue
-		}
-
-		asn := spec.ASNumber
-		if asn != nil {
-			peerASN = *asn
-		}
-		if v4 := spec.IPv4Address; v4 != nil {
-			ip := v4.IP.String()
-			id := strings.Replace(ip, ".", "_", -1)
-			ns = append(ns, &bgpconfig.Neighbor{
-				Config: bgpconfig.NeighborConfig{
-					NeighborAddress: ip,
-					PeerAs:          uint32(peerASN),
-					Description:     fmt.Sprintf("Mesh_%s", id),
-				},
-			})
-		}
-		if v6 := spec.IPv6Address; v6 != nil {
-			ip := v6.IP.String()
-			id := strings.Replace(ip, ":", "_", -1)
-			ns = append(ns, &bgpconfig.Neighbor{
-				Config: bgpconfig.NeighborConfig{
-					NeighborAddress: ip,
-					PeerAs:          uint32(peerASN),
-					Description:     fmt.Sprintf("Mesh_%s", id),
-				},
-			})
-		}
-	}
-	return ns, nil
-
-}
-
-func etcdKeyToPrefix(key string) string {
-	path := strings.Split(key, "/")
-	return strings.Replace(path[len(path)-1], "-", "/", 1)
-}
-
 func (s *Server) makePath(prefix string, isWithdrawal bool) (*bgpapi.Path, error) {
 	_, ipNet, err := net.ParseCIDR(prefix)
 	if err != nil {
@@ -452,35 +366,46 @@ func (s *Server) makePath(prefix string, isWithdrawal bool) (*bgpapi.Path, error
 		v4 = false
 	}
 
-	nlri, _ := ptypes.MarshalAny(&bgpapi.IPAddrPrefix{
+	nlri, err := ptypes.MarshalAny(&bgpapi.IPAddressPrefix{
 		Prefix:    p.String(),
-		PrefixLen: uint8(masklen),
+		PrefixLen: uint32(masklen),
 	})
-	var family *bgpapi.Family
-	attrs := []*any.Any{
-		&ptypes.MarshalAny(&api.OriginAttribute{
-			Origin: 0,
-		}),
+	if err != nil {
+		return nil, err
 	}
+	var family *bgpapi.Family
+	originAttr, err := ptypes.MarshalAny(&bgpapi.OriginAttribute{Origin: 0})
+	if err != nil {
+		return nil, err
+	}
+	attrs := []*any.Any{originAttr}
 
 	if v4 {
-		family = &bgpapi.Family{Afi: api.Family_AFI_IP, Safi: api.Family_SAFI_UNICAST}
-		attrs = append(attrs, ptypes.MarshalAny(&bgpapi.NextHopAttribute{
+		family = &bgpFamilyUnicastIPv4
+		nhAttr, err := ptypes.MarshalAny(&bgpapi.NextHopAttribute{
 			NextHop: s.ipv4.String(),
-		}))
+		})
+		if err != nil {
+			return nil, err
+		}
+		attrs = append(attrs, nhAttr)
 	} else {
-		family = &bgpapi.Family{Afi: api.Family_AFI_IP6, Safi: api.Family_SAFI_UNICAST}
-		attrs = append(attrs, ptypes.MarshalAny(&bgpapi.MpReachNLRIAttribute{
-			NextHop: s.ipv6.String(),
-			Nlris:   []*any.Any{nlri},
-		}))
+		family = &bgpFamilyUnicastIPv6
+		nlriAttr, err := ptypes.MarshalAny(&bgpapi.MpReachNLRIAttribute{
+			NextHops: []string{s.ipv6.String()},
+			Nlris:    []*any.Any{nlri},
+		})
+		if err != nil {
+			return nil, err
+		}
+		attrs = append(attrs, nlriAttr)
 	}
 
 	return &bgpapi.Path{
 		Nlri:       nlri,
 		IsWithdraw: isWithdrawal,
 		Pattrs:     attrs,
-		Age:        time.Now(),
+		Age:        ptypes.TimestampNow(),
 		Family:     family,
 	}, nil
 }
@@ -489,30 +414,25 @@ func (s *Server) makePath(prefix string, isWithdrawal bool) (*bgpapi.Path, error
 // list of BGP path.
 // using backend directly since libcalico-go doesn't seem to have a method to return
 // assigned prefixes yet.
-func (s *Server) getAssignedPrefixes(api etcd.KeysAPI) ([]*bgpapi.Path, string, error) {
+func (s *Server) getAssignedPrefixes() ([]*bgpapi.Path, string, error) {
 	var ps []*bgpapi.Path
 	revision := ""
 
 	f := func(ipVersion int) error {
-		blockList, err := c.calicoCli.Backend.List(
+		blockList, err := s.client.Backend.List(
 			context.Background(),
-			model.BlockAffinityListOptions{Host: os.Getenv(NODENAME), IPVersion: ver},
+			model.BlockAffinityListOptions{Host: os.Getenv(NODENAME), IPVersion: ipVersion},
 			revision,
 		)
 		if err != nil {
-			if _, ok := err.(cerrors.ErrorResourceDoesNotExist); ok {
-				// The block path does not exist yet.  This is OK - it means
-				// there are no affine blocks.
-			} else {
-				return err
-			}
+			return err
 		}
 		if revision == "" {
 			revision = blockList.Revision
 		}
 		for _, block := range blockList.KVPairs {
 			key := block.Key.(model.BlockAffinityKey)
-			value := block.Value.(model.BlockAffinity)
+			// value := block.Value.(model.BlockAffinity)
 			path, err := s.makePath(key.CIDR.String(), false)
 			if err != nil {
 				return err
@@ -524,12 +444,12 @@ func (s *Server) getAssignedPrefixes(api etcd.KeysAPI) ([]*bgpapi.Path, string, 
 
 	if s.ipv4 != nil {
 		if err := f(4); err != nil {
-			return nil, 0, err
+			return nil, "", err
 		}
 	}
 	if s.ipv6 != nil {
 		if err := f(6); err != nil {
-			return nil, 0, err
+			return nil, "", err
 		}
 	}
 	return ps, revision, nil
@@ -539,7 +459,7 @@ func (s *Server) getAssignedPrefixes(api etcd.KeysAPI) ([]*bgpapi.Path, string, 
 // aggregated routes which are assigned to the node.
 // This function also updates policy appropriately.
 func (s *Server) watchPrefix() error {
-	paths, revision, err := s.getAssignedPrefixes(s.etcd)
+	paths, revision, err := s.getAssignedPrefixes()
 	if err != nil {
 		return err
 	}
@@ -548,7 +468,7 @@ func (s *Server) watchPrefix() error {
 	}
 	s.prefixReady <- 1
 
-	prefixWatcher, err := c.client.Backend.Watch(
+	prefixWatcher, err := s.client.Backend.Watch(
 		context.Background(),
 		model.BlockAffinityListOptions{Host: os.Getenv(NODENAME)},
 		revision,
@@ -560,16 +480,16 @@ func (s *Server) watchPrefix() error {
 	for update := range prefixWatcher.ResultChan() {
 		del := false
 		pair := update.New
-		switch update.WatchEventType {
-		case WatchError:
+		switch update.Type {
+		case backendapi.WatchError:
 			return update.Error
-		case WatchDeleted:
+		case backendapi.WatchDeleted:
 			del = true
 			pair = update.Old
-		case WatchAdded, WatchModified:
+		case backendapi.WatchAdded, backendapi.WatchModified:
 		}
 		key := pair.Key.(model.BlockAffinityKey)
-		path, err := makePath(key.CIDR.String(), del)
+		path, err := s.makePath(key.CIDR.String(), del)
 		if err != nil {
 			return err
 		}
@@ -580,67 +500,24 @@ func (s *Server) watchPrefix() error {
 	return nil
 }
 
-func (s *Server) AddNeighbor(n *bgpconfig.Neighbor) error {
-	n.GracefulRestart.Config.Enabled = true
-	n.GracefulRestart.Config.RestartTime = 120
-	n.GracefulRestart.Config.LongLivedEnabled = true
-	n.GracefulRestart.Config.NotificationEnabled = true
-	ipAddr, err := net.ResolveIPAddr("ip", n.Config.NeighborAddress)
-	var typ bgpconfig.AfiSafiType
-	if err == nil {
-		if ipAddr.IP.To4() == nil {
-			typ = bgpconfig.AFI_SAFI_TYPE_IPV6_UNICAST
-		} else {
-			typ = bgpconfig.AFI_SAFI_TYPE_IPV4_UNICAST
-		}
-	}
-
-	n.AfiSafis = []bgpconfig.AfiSafi{
-		bgpconfig.AfiSafi{
-			Config: bgpconfig.AfiSafiConfig{
-				AfiSafiName: typ,
-				Enabled:     true,
-			},
-			MpGracefulRestart: bgpconfig.MpGracefulRestart{
-				Config: bgpconfig.MpGracefulRestartConfig{
-					Enabled: true,
-				},
-			},
-			State: bgpconfig.AfiSafiState{
-				AfiSafiName: typ,
-			},
-		},
-	}
-	log.Printf("AddNeighbor neighbor=%#v", n)
-	log.Printf("AddNeighbor neighbor=%s", n)
-	if err := s.bgpServer.AddNeighbor(n); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (s *Server) createBGPPeer(ip string, asn uint32) (*bgpapi.Peer, error) {
 	ipAddr, err := net.ResolveIPAddr("ip", ip)
 	if err != nil {
 		return nil, err
 	}
-	typ := &bgpapi.Family{
-		Safi: bgpapi.Family_SAFI_UNICAST,
-	}
+	typ := &bgpFamilyUnicastIPv4
 	if ipAddr.IP.To4() == nil {
-		typ.Afi = bgpapi.Family_AFI_IP6
-	} else {
-		typ.Afi = bgpapi.Family_AFI_IP
+		typ = &bgpFamilyUnicastIPv6
 	}
 
-	afiSafis = []*bgpapi.AfiSafi{
-		*bgpapi.AfiSafi{
+	afiSafis := []*bgpapi.AfiSafi{
+		&bgpapi.AfiSafi{
 			Config: &bgpapi.AfiSafiConfig{
 				Family:  typ,
 				Enabled: true,
 			},
 			MpGracefulRestart: &bgpapi.MpGracefulRestart{
-				Config: bgpconfig.MpGracefulRestartConfig{
+				Config: &bgpapi.MpGracefulRestartConfig{
 					Enabled: true,
 				},
 			},
@@ -648,7 +525,7 @@ func (s *Server) createBGPPeer(ip string, asn uint32) (*bgpapi.Peer, error) {
 	}
 	peer := &bgpapi.Peer{
 		Conf: &bgpapi.PeerConf{
-			NeighborAddress: ipAddr,
+			NeighborAddress: ipAddr.String(),
 			PeerAs:          asn,
 		},
 		GracefulRestart: &bgpapi.GracefulRestart{
@@ -667,7 +544,7 @@ func (s *Server) addBGPPeer(ip string, asn uint32) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.bgpServer.AddPeer(context.Background(), &bgpapi.AddPeerRequest{Peer: peer})
+	err = s.bgpServer.AddPeer(context.Background(), &bgpapi.AddPeerRequest{Peer: peer})
 	return err
 }
 
@@ -680,84 +557,90 @@ func (s *Server) updateBGPPeer(ip string, asn uint32) error {
 	return err
 }
 
-func (s *Server) deleteBGPPeer(ip string, asn uint32) error {
-	_, err = s.bgpServer.DeletePeer(context.Background(), &bgpapi.DeletePeerRequest{Address: ip})
+func (s *Server) deleteBGPPeer(ip string) error {
+	err := s.bgpServer.DeletePeer(context.Background(), &bgpapi.DeletePeerRequest{Address: ip})
 	return err
 }
 
-func (s *Server) handlePeerUpdate(peer calicov3.BGPPeer, eventType watch.EventType) error {
+func (s *Server) handlePeerUpdate(peer *calicov3.BGPPeer, eventType watch.EventType) error {
 	log.Debugf("Got peer update: %s %+v", eventType, peer)
 	// First check if we should peer with this peer at all
 	if peer.Spec.Node != "" && peer.Spec.Node != s.nodeName {
-		return
+		return nil
 	}
 	// TODO handle NodeSelector / PeerSelector (how?)
 	switch eventType {
 	case watch.Error:
 	case watch.Added:
-		s.addBGPPeer(peer.Spec.PeerIP, peer.Spec.ASNumber)
+		s.addBGPPeer(peer.Spec.PeerIP, uint32(peer.Spec.ASNumber))
 	case watch.Modified:
-		s.updateBGPPeer(peer.Spec.PeerIP, peer.Spec.ASNumber)
+		s.updateBGPPeer(peer.Spec.PeerIP, uint32(peer.Spec.ASNumber))
 	case watch.Deleted:
 		s.deleteBGPPeer(peer.Spec.PeerIP)
 	}
+	return nil
 }
 
 func (s *Server) watchBGPPeers() error {
-	var revision string
-
 	peers, err := s.clientv3.BGPPeers().List(context.Background(), options.ListOptions{})
 	if err != nil {
 		return err
 	}
 	for _, peer := range peers.Items {
-		s.handlePeerUpdate(peer, watch.Added)
+		s.handlePeerUpdate(&peer, watch.Added)
 	}
 
 	watcher, err := s.clientv3.BGPPeers().Watch(context.Background(), options.ListOptions{ResourceVersion: peers.ResourceVersion})
 	if err != nil {
 		return err
 	}
-	for update := range watcher.ResultChan {
+	for update := range watcher.ResultChan() {
 		peer := update.Object
 		switch update.Type {
 		case watch.Added, watch.Modified:
 		case watch.Deleted:
-			peer := update.Previous
+			peer = update.Previous
 		case watch.Error:
 			return update.Error
 		}
-		s.handlePeerUpdate(peer.(calicov3.BGPPeer), update.Type)
+		s.handlePeerUpdate(peer.(*calicov3.BGPPeer), update.Type)
 	}
 	return nil
 }
 
 // Returns true if the config of the current node has changed and requires a restart
-func (s *Server) handleNodeUpdate(node calicov3.Node, eventType watch.EventType, isMesh bool) (bool, error) {
+func (s *Server) handleNodeUpdate(node *calicov3.Node, eventType watch.EventType, isMesh bool) (bool, error) {
 	log.Debugf("Got node update: mesh:%s %s %+v", isMesh, eventType, node)
 	// If the mesh is disabled, discard all updates that aren't on the current node
-	if node.OrchRefs.length != 1 {
-		return true, fmt.Errorf("%d OrchRefs found in node, cannot continue", node.OrchRefs.length)
+	if len(node.Spec.OrchRefs) != 1 {
+		return true, fmt.Errorf("%d OrchRefs found in node, cannot continue", len(node.Spec.OrchRefs))
 	}
-	if node.OrchRefs[0].NodeName == s.nodeName {
+	if node.Spec.OrchRefs[0].NodeName == s.nodeName {
 		// No need to manage ourselves, but if we change we need to restart and reconfigure
 		return true, nil
 	}
-	if !isMesh || node.BGP == nil { // No BGP config for this node
+	if !isMesh || node.Spec.BGP == nil { // No BGP config for this node
 		return false, nil
 	}
-	asNumber := node.BGP.ASNumber
-	if asNumber == nil {
-		asNumber := s.client.Config().GetGlobalASNumber() // TODO: cache this?
+	var asNumber uint32
+	var err error
+	if node.Spec.BGP.ASNumber == nil {
+		asn, err := s.client.Config().GetGlobalASNumber() // TODO: cache this?
+		asNumber = uint32(asn)
+		if err != nil {
+			return false, err
+		}
+	} else {
+		asNumber = uint32(*node.Spec.BGP.ASNumber)
 	}
-	v4Net, err := net.ParseCIDR(node.BGP.IPv4Address)
+	v4IP, _, err := net.ParseCIDR(node.Spec.BGP.IPv4Address)
 	if err != nil {
 		return false, nil
 	}
-	v6Set := node.BGP.IPv6Address != ""
-	var v6Net net.IPNet
+	v6Set := node.Spec.BGP.IPv6Address != ""
+	var v6IP net.IP
 	if v6Set {
-		v6Net, err = net.ParseCIDR(node.BGP.IPv6Address)
+		v6IP, _, err = net.ParseCIDR(node.Spec.BGP.IPv6Address)
 		if err != nil {
 			return false, err
 		}
@@ -765,23 +648,24 @@ func (s *Server) handleNodeUpdate(node calicov3.Node, eventType watch.EventType,
 	switch eventType {
 	case watch.Error:
 	case watch.Added:
-		s.addBGPPeer(v4Net.IP.String(), asNumber) // v4 seems to be mandatory
+		s.addBGPPeer(v4IP.String(), asNumber) // v4 seems to be mandatory
 		if v6Set {
-			s.addBGPPeer(v6Net.IP.String(), asNumber)
+			s.addBGPPeer(v6IP.String(), asNumber)
 		}
 	case watch.Modified:
 		// TODO this doesn't work if the IP address changes
 		// need to get the old node and delete the corresponding peer in that case
-		s.updateBGPPeer(v4Net.IP.String(), asNumber)
+		s.updateBGPPeer(v4IP.String(), asNumber)
 		if v6Set {
-			s.updateBGPPeer(v6Net.IP.String(), asNumber)
+			s.updateBGPPeer(v6IP.String(), asNumber)
 		}
 	case watch.Deleted:
-		s.deleteBGPPeer(v4Net.IP.String())
+		s.deleteBGPPeer(v4IP.String())
 		if v6Set {
-			s.deleteBGPPeer(v6Net.IP.String())
+			s.deleteBGPPeer(v6IP.String())
 		}
 	}
+	return false, nil
 }
 
 func (s *Server) watchNodes() error {
@@ -795,23 +679,23 @@ func (s *Server) watchNodes() error {
 		return err
 	}
 	for _, node := range nodes.Items {
-		s.handleNodeUpdate(node, watch.Added, isMesh)
+		s.handleNodeUpdate(&node, watch.Added, isMesh)
 	}
 
 	watcher, err := s.clientv3.Nodes().Watch(context.Background(), options.ListOptions{ResourceVersion: nodes.ResourceVersion})
 	if err != nil {
 		return err
 	}
-	for update := range watcher.ResultChan {
+	for update := range watcher.ResultChan() {
 		node := update.Object
 		switch update.Type {
 		case watch.Added, watch.Modified:
 		case watch.Deleted:
-			peer := update.Previous
+			node = update.Previous
 		case watch.Error:
 			return update.Error
 		}
-		s.handleNodeUpdate(peer.(calicov3.Node), update.Type, isMesh)
+		s.handleNodeUpdate(node.(*calicov3.Node), update.Type, isMesh)
 	}
 	return nil
 }
@@ -852,7 +736,11 @@ func (s *Server) watchKernelRoute() error {
 				return err
 			}
 			log.Printf("made path from kernel update: %s", path)
-			if _, err = s.bgpServer.AddPath("", []*bgpapi.Path{path}); err != nil {
+			if _, err = s.bgpServer.AddPath(context.Background(), &bgpapi.AddPathRequest{
+				TableType: bgpapi.TableType_GLOBAL,
+				VrfId:     "",
+				Path:      path,
+			}); err != nil {
 				return err
 			}
 		} else if update.Table == syscall.RT_TABLE_LOCAL {
@@ -860,15 +748,11 @@ func (s *Server) watchKernelRoute() error {
 			// Some routes we injected may be deleted by the kernel
 			// Reload routes from BGP RIB and inject again
 			ip, _, _ := net.ParseCIDR(update.Dst.String())
-			family := bgp.RF_IPv4_UC
+			family := "4"
 			if ip.To4() == nil {
-				family = bgp.RF_IPv6_UC
+				family = "6"
 			}
-			tbl, err := s.bgpServer.GetRib("", family, nil)
-			if err != nil {
-				return err
-			}
-			s.reloadCh <- tbl.Bests("")
+			s.reloadCh <- family
 		}
 	}
 	return fmt.Errorf("netlink route subscription ended")
@@ -896,7 +780,11 @@ func (s *Server) loadKernelRoute() error {
 				return err
 			}
 			log.Printf("made path from kernel route: %s", path)
-			if _, err = s.bgpServer.AddPath("", []*bgpapi.Path{path}); err != nil {
+			if _, err = s.bgpServer.AddPath(context.Background(), &bgpapi.AddPathRequest{
+				TableType: bgpapi.TableType_GLOBAL,
+				VrfId:     "",
+				Path:      path,
+			}); err != nil {
 				return err
 			}
 		}
@@ -904,10 +792,31 @@ func (s *Server) loadKernelRoute() error {
 	return nil
 }
 
+func getNexthop(path *bgpapi.Path) string {
+	for _, attr := range path.Pattrs {
+		nhAttr := &bgpapi.NextHopAttribute{}
+		mpReachAttr := &bgpapi.MpReachNLRIAttribute{}
+		if err := ptypes.UnmarshalAny(attr, nhAttr); err == nil {
+			return nhAttr.NextHop
+		}
+		if err := ptypes.UnmarshalAny(attr, mpReachAttr); err == nil {
+			if len(mpReachAttr.NextHops) != 1 {
+				log.Fatalf("Cannot process more than one Nlri in path attributes: %+v", mpReachAttr)
+			}
+			return mpReachAttr.NextHops[0]
+		}
+	}
+	return ""
+}
+
 // injectRoute is a helper function to inject BGP routes to linux kernel
 // TODO: multipath support
 func (s *Server) injectRoute(path *bgpapi.Path) error {
-	nexthop := path.GetNexthop()
+	nexthopAddr := getNexthop(path)
+	nexthop := net.ParseIP(nexthopAddr)
+	if nexthop == nil {
+		return fmt.Errorf("Cannot determine path nexthop: %+v", path)
+	}
 	nlri := path.GetNlri()
 	dst, _ := netlink.ParseIPNet(nlri.String())
 	route := &netlink.Route{
@@ -919,18 +828,18 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 	ipip := false
 	if dst.IP.To4() != nil {
 		if p := s.ipam.match(nlri.String()); p != nil {
-			ipip = p.IPIP != ""
+			ipip = p.IPIPMode != encap.Undefined
 
 			node, err := s.client.Nodes().Get(calicoapi.NodeMetadata{Name: s.nodeName})
 			if err != nil {
 				return err
 			}
 
-			if p.Mode == "cross-subnet" && !isCrossSubnet(route.Gw, node.Spec.BGP.IPv4Address.Network().IPNet) {
+			if p.IPIPMode == encap.CrossSubnet && !isCrossSubnet(route.Gw, node.Spec.BGP.IPv4Address.Network().IPNet) {
 				ipip = false
 			}
 			if ipip {
-				i, err := net.InterfaceByName(p.IPIP)
+				i, err := net.InterfaceByName(p.IPIPInterface)
 				if err != nil {
 					return err
 				}
@@ -946,7 +855,7 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 		return netlink.RouteDel(route)
 	}
 	if !ipip {
-		gw, err := recursiveNexthopLookup(path.GetNexthop())
+		gw, err := recursiveNexthopLookup(nexthop)
 		if err != nil {
 			return err
 		}
@@ -960,27 +869,64 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 // linux kernel
 // TODO: multipath support
 func (s *Server) watchBGPPath() error {
-	watcher := s.bgpServer.Watch(bgpserver.WatchBestPath(false))
-	for {
-		var paths []*bgpapi.Path
-		select {
-		case ev := <-watcher.Event():
-			msg, ok := ev.(*bgpserver.WatchEventBestPath)
-			if !ok {
-				continue
-			}
-			paths = msg.PathList
-		case paths = <-s.reloadCh:
+	var err error
+	startMonitor := func(f *bgpapi.Family) (context.CancelFunc, error) {
+		ctx, stopFunc := context.WithCancel(nil)
+		err := s.bgpServer.MonitorTable(
+			ctx,
+			&bgpapi.MonitorTableRequest{
+				TableType: bgpapi.TableType_GLOBAL,
+				Name:      "",
+				Family:    f,
+				Current:   false,
+			},
+			func(path *bgpapi.Path) {
+				if path == nil {
+					log.Warnf("nil path update, skipping")
+					return
+				}
+				log.Infof("Got path update: %+v", path)
+				if !path.IsFromExternal {
+					log.Debugf("Ignoring internal path")
+					return
+				}
+				if err := s.injectRoute(path); err != nil {
+					fmt.Errorf("cannot inject route: %v", err)
+				}
+			},
+		)
+		return stopFunc, err
+	}
+
+	var stopV4Monitor, stopV6Monitor context.CancelFunc
+	if s.hasV4 {
+		stopV4Monitor, err = startMonitor(&bgpFamilyUnicastIPv4)
+		if err != nil {
+			return err
 		}
-		for _, path := range paths {
-			if path.IsLocal() {
-				continue
+	}
+	if s.hasV6 {
+		stopV6Monitor, err = startMonitor(&bgpFamilyUnicastIPv4)
+		if err != nil {
+			return err
+		}
+	}
+	for family := range s.reloadCh {
+		if s.hasV4 && family == "4" {
+			stopV4Monitor()
+			stopV4Monitor, err = startMonitor(&bgpFamilyUnicastIPv4)
+			if err != nil {
+				return err
 			}
-			if err := s.injectRoute(path); err != nil {
+		} else if s.hasV6 && family == "6" {
+			stopV6Monitor()
+			stopV6Monitor, err = startMonitor(&bgpFamilyUnicastIPv6)
+			if err != nil {
 				return err
 			}
 		}
 	}
+	return nil
 }
 
 // initialPolicySetting initialize BGP export policy.
@@ -1029,7 +975,7 @@ func (s *Server) initialPolicySetting() error {
 		},
 	}
 
-	if err = s.bgpServer.AddPolicy(context.Background(), &bgpapi.AddPolicyRequest{
+	if err := s.bgpServer.AddPolicy(context.Background(), &bgpapi.AddPolicyRequest{
 		Policy:                  definition,
 		ReferExistingStatements: false},
 	); err != nil {
@@ -1084,12 +1030,12 @@ func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
 		},
 	}
 	if del {
-		_, err = s.bgpServer.DeleteDefinedSet(
+		err = s.bgpServer.DeleteDefinedSet(
 			context.Background(),
 			&bgpapi.DeleteDefinedSetRequest{DefinedSet: ps, All: false},
 		)
 	} else {
-		_, err = s.bgpServer.AddDefinedSet(
+		err = s.bgpServer.AddDefinedSet(
 			context.Background(),
 			&bgpapi.AddDefinedSetRequest{DefinedSet: ps},
 		)
@@ -1115,12 +1061,12 @@ func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
 		},
 	}
 	if del {
-		_, err = s.bgpServer.DeleteDefinedSet(
+		err = s.bgpServer.DeleteDefinedSet(
 			context.Background(),
 			&bgpapi.DeleteDefinedSetRequest{DefinedSet: ps, All: false},
 		)
 	} else {
-		_, err = s.bgpServer.AddDefinedSet(
+		err = s.bgpServer.AddDefinedSet(
 			context.Background(),
 			&bgpapi.AddDefinedSetRequest{DefinedSet: ps},
 		)
@@ -1131,7 +1077,7 @@ func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
 
 	// Finally add/remove path to/from the main table to annouce it to our peers
 	if del {
-		_, err = s.bgpServer.DeletePath(context.Background(), &bgpapi.DeletePathRequest{
+		err = s.bgpServer.DeletePath(context.Background(), &bgpapi.DeletePathRequest{
 			TableType: bgpapi.TableType_GLOBAL,
 			VrfId:     "",
 			Path:      path,

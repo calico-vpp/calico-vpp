@@ -17,6 +17,7 @@ require (
 	github.com/lunixbochs/struc v0.0.0-20190916212049-a5c72983bc42
 	github.com/osrg/gobgp v2.0.0+incompatible
 	github.com/pborman/uuid v0.0.0-20150603214016-ca53cad383ca // indirect
+	github.com/pkg/errors v0.8.0
 	github.com/projectcalico/cni-plugin v3.8.4+incompatible // indirect
 	github.com/projectcalico/go-yaml v0.0.0-20161201183616-955bc3e451ef // indirect
 	github.com/projectcalico/libcalico-go v1.7.3

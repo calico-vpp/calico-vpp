@@ -16,10 +16,12 @@
 package main
 
 import (
+	"bytes"
 	"net"
 	"reflect"
 	"sync"
 
+	backendapi "github.com/projectcalico/libcalico-go/lib/backend/api"
 	"github.com/projectcalico/libcalico-go/lib/backend/model"
 	calicocli "github.com/projectcalico/libcalico-go/lib/client"
 	log "github.com/sirupsen/logrus"
@@ -27,7 +29,7 @@ import (
 )
 
 // contains returns true if the IPPool contains 'prefix'
-func contains(pool model.IPPool, prefix string) (bool, error) {
+func contains(pool *model.IPPool, prefix string) (bool, error) {
 	ip, prefixNet, err := net.ParseCIDR(prefix)
 	if err != nil {
 		return false, err
@@ -37,18 +39,29 @@ func contains(pool model.IPPool, prefix string) (bool, error) {
 	return poolCIDRBits == prefixBits && pool.CIDR.Contains(ip) && prefixLen >= poolCIDRLen, nil
 }
 
+// Compare networks only
+func equalPools(a *model.IPPool, b *model.IPPool) bool {
+	if !a.CIDR.IP.Equal(b.CIDR.IP) {
+		return false
+	}
+	if bytes.Compare(a.CIDR.Mask, b.CIDR.Mask) != 0 {
+		return false
+	}
+	return true
+}
+
 type ipamCache struct {
 	mu            sync.RWMutex
 	m             map[string]*model.IPPool
 	client        *calicocli.Client
-	updateHandler func(*ipPool) error
+	updateHandler func(*model.IPPool) error
 	ready         bool
 	readyCond     *sync.Cond
 }
 
 // match checks whether we have an IP pool which contains the given prefix.
 // If we have, it returns the pool.
-func (c *ipamCache) match(prefix string) *ipPool {
+func (c *ipamCache) match(prefix string) *model.IPPool {
 	if !c.ready {
 		c.readyCond.L.Lock()
 		for !c.ready {
@@ -59,7 +72,12 @@ func (c *ipamCache) match(prefix string) *ipPool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, p := range c.m {
-		if p.contain(prefix) {
+		in, err := contains(p, prefix)
+		if err != nil {
+			log.Warnf("contains errored: %v", err)
+			continue
+		}
+		if in {
 			return p
 		}
 	}
@@ -69,9 +87,9 @@ func (c *ipamCache) match(prefix string) *ipPool {
 // update updates the internal map with IPAM updates when the update
 // is new addtion to the map or changes the existing item, it calls
 // updateHandler
-func (c *ipamCache) update(pair model.KVPair, del bool) error {
+func (c *ipamCache) update(pair *model.KVPair, del bool) error {
 	if reflect.TypeOf(pair.Value) != reflect.TypeOf(model.IPPool{}) {
-		log.Panicf("unknown parameter type: %s", reflect.TypeOf(nodeEtcd))
+		log.Panicf("unknown parameter type: %s", reflect.TypeOf(pair.Value))
 	}
 	pool := pair.Value.(model.IPPool)
 	key := pair.Key.String()
@@ -83,14 +101,14 @@ func (c *ipamCache) update(pair model.KVPair, del bool) error {
 	if del {
 		delete(c.m, key)
 		return nil
-	} else if pool == existing {
+	} else if equalPools(&pool, existing) {
 		return nil
 	}
 
-	c.m[key] = pool
+	c.m[key] = &pool
 
 	if c.updateHandler != nil {
-		return c.updateHandler(pool)
+		return c.updateHandler(&pool)
 	}
 	return nil
 }
@@ -103,6 +121,9 @@ func (c *ipamCache) sync() error {
 	}
 	for _, pool := range poolsList.KVPairs {
 		err := c.update(pool, false)
+		if err != nil {
+			return err
+		}
 	}
 
 	c.ready = true
@@ -116,13 +137,13 @@ func (c *ipamCache) sync() error {
 	for update := range poolsWatcher.ResultChan() {
 		del := false
 		pair := update.New
-		switch update.WatchEventType {
-		case WatchError:
+		switch update.Type {
+		case backendapi.WatchError:
 			return update.Error
-		case WatchDeleted:
+		case backendapi.WatchDeleted:
 			del = true
 			pair = update.Old
-		case WatchAdded, WatchModified:
+		case backendapi.WatchAdded, backendapi.WatchModified:
 		}
 		if err = c.update(pair, del); err != nil {
 			return err
@@ -135,7 +156,7 @@ func (c *ipamCache) sync() error {
 func newIPAMCache(client *calicocli.Client, updateHandler func(*model.IPPool) error) *ipamCache {
 	cond := sync.NewCond(&sync.Mutex{})
 	return &ipamCache{
-		m:             make(map[string]*ipPool),
+		m:             make(map[string]*model.IPPool),
 		updateHandler: updateHandler,
 		client:        client,
 		readyCond:     cond,
