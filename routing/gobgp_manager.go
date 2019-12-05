@@ -21,20 +21,22 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"reflect"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/golang/protobuf/ptypes"
 	"github.com/golang/protobuf/ptypes/any"
 	bgpapi "github.com/osrg/gobgp/api"
 	bgpserver "github.com/osrg/gobgp/pkg/server"
 	"github.com/pkg/errors"
-	calicoapi "github.com/projectcalico/libcalico-go/lib/apis/v1"
 	calicov3 "github.com/projectcalico/libcalico-go/lib/apis/v3"
-	backendapi "github.com/projectcalico/libcalico-go/lib/backend/api"
-	"github.com/projectcalico/libcalico-go/lib/backend/encap"
 	"github.com/projectcalico/libcalico-go/lib/backend/model"
 	calicocli "github.com/projectcalico/libcalico-go/lib/client"
 	calicocliv3 "github.com/projectcalico/libcalico-go/lib/clientv3"
+	calicoerr "github.com/projectcalico/libcalico-go/lib/errors"
 	"github.com/projectcalico/libcalico-go/lib/numorstring"
 	"github.com/projectcalico/libcalico-go/lib/options"
 	"github.com/projectcalico/libcalico-go/lib/watch"
@@ -53,6 +55,8 @@ const (
 	hostPrefixSetName       = "host"
 
 	RTPROT_GOBGP = 0x11
+
+	prefixWatchInterval = 60 * time.Second
 )
 
 var (
@@ -61,8 +65,8 @@ var (
 )
 
 type IpamCache interface {
-	match(string) *model.IPPool
-	update(*model.KVPair, bool) error
+	match(net.IPNet) *calicov3.IPPool
+	update(*calicov3.IPPool, bool) error
 	sync() error
 }
 
@@ -111,34 +115,35 @@ func cleanUpRoutes() error {
 }
 
 type Server struct {
-	t           tomb.Tomb
-	bgpServer   *bgpserver.BgpServer
-	client      *calicocli.Client
-	clientv3    calicocliv3.Interface
-	hasV4       bool
-	ipv4        net.IP
-	hasV6       bool
-	ipv6        net.IP
-	nodeName    string
-	ipam        IpamCache
-	reloadCh    chan string
-	prefixReady chan int
+	t              tomb.Tomb
+	bgpServer      *bgpserver.BgpServer
+	client         *calicocli.Client
+	clientv3       calicocliv3.Interface
+	defaultBGPConf *calicov3.BGPConfigurationSpec
+	hasV4          bool
+	ipv4           net.IP
+	hasV6          bool
+	ipv6           net.IP
+	nodeName       string
+	ipam           IpamCache
+	reloadCh       chan string
+	prefixReady    chan int
 }
 
 func NewServer() (*Server, error) {
 	nodeName := os.Getenv(NODENAME)
 	calicoCli, err := calicocli.NewFromEnv()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "cannot create calico v1 api client")
 	}
 	calicoCliV3, err := calicocliv3.NewFromEnv()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "cannot create calico v3 api client")
 	}
 
 	node, err := calicoCliV3.Nodes().Get(context.Background(), nodeName, options.GetOptions{})
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "cannot fetch current node")
 	}
 
 	if node.Spec.BGP == nil {
@@ -167,6 +172,12 @@ func NewServer() (*Server, error) {
 		reloadCh:    make(chan string),
 		prefixReady: make(chan int),
 	}
+
+	BGPConf, err := server.getDefaultBGPConfig()
+	if err != nil {
+		return nil, errors.Wrap(err, "error getting default BGP configuration")
+	}
+	server.defaultBGPConf = BGPConf
 	return &server, nil
 }
 
@@ -181,7 +192,7 @@ func (s *Server) Serve() {
 
 	globalConfig, err := s.getGlobalConfig()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("cannot get global configuration: ", err)
 	}
 
 	if err := s.bgpServer.StartBgp(context.Background(), &bgpapi.StartBgpRequest{
@@ -191,10 +202,10 @@ func (s *Server) Serve() {
 	}
 
 	if err := s.initialPolicySetting(); err != nil {
-		log.Fatal(err)
+		log.Fatal("error configuring initial policies: ", err)
 	}
 
-	s.ipam = newIPAMCache(s.client, s.ipamUpdateHandler)
+	s.ipam = newIPAMCache(s.clientv3, s.ipamUpdateHandler)
 	// sync IPAM and call ipamUpdateHandler
 	s.t.Go(func() error { return fmt.Errorf("syncIPAM: %s", s.ipam.sync()) })
 	// watch prefix assigned and announce to other BGP peers
@@ -204,9 +215,9 @@ func (s *Server) Serve() {
 	// watch Nodes
 	s.t.Go(func() error { return fmt.Errorf("watchNodes: %s", s.watchNodes()) })
 
-	// TODO need to watch global ASN and mesh settings?
-
-	////
+	// TODO need to watch BGP configurations and restart in case of changes
+	// Need to get initial BGP config here, pass it to the watchers that need it,
+	// and pass its revision to the BGP config and nodes watchers
 
 	// watch routes from other BGP peers and update FIB
 	s.t.Go(func() error { return fmt.Errorf("watchBGPPath: %s", s.watchBGPPath()) })
@@ -227,42 +238,48 @@ func isCrossSubnet(gw net.IP, subnet net.IPNet) bool {
 	return !subnet.Contains(gw)
 }
 
-func (s *Server) ipamUpdateHandler(pool *model.IPPool) error {
+func (s *Server) ipamUpdateHandler(pool *calicov3.IPPool) error {
+	log.Debugf("Pool %s updated, handler called", pool.Spec.CIDR)
 	filter := &netlink.Route{
 		Protocol: RTPROT_GOBGP,
 	}
 	list, err := netlink.RouteListFiltered(netlink.FAMILY_V4, filter, netlink.RT_FILTER_PROTOCOL)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "error getting kernel routes")
 	}
-	node, err := s.client.Nodes().Get(calicoapi.NodeMetadata{Name: s.nodeName})
+	node, err := s.clientv3.Nodes().Get(context.Background(), s.nodeName, options.GetOptions{})
 	if err != nil {
-		return err
-	}
+		return errors.Wrap(err, "error getting node config")
+	} // TODO cache this we only do this to get the IPv4 subnet of the node from cross-subnet IPIP mode
 
+	// Check if we need to update any of the routes we installed
 	for _, route := range list {
 		if route.Dst == nil {
 			continue
 		}
-		prefix := route.Dst.String()
-		inPool, err := contains(pool, prefix)
+		inPool, err := contains(pool, *route.Dst)
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "error determining whether prefix %s is in pool", route.Dst.String())
 		}
 		if inPool {
-			ipip := pool.IPIPMode != encap.Undefined
-			if pool.IPIPMode == encap.CrossSubnet && !isCrossSubnet(route.Gw, node.Spec.BGP.IPv4Address.Network().IPNet) {
+			ipip := pool.Spec.IPIPMode != calicov3.IPIPModeNever
+			_, ipNet, err := net.ParseCIDR(node.Spec.BGP.IPv4Address)
+			if err != nil {
+				return errors.Wrapf(err, "error parsing node IPv4 network: %s", node.Spec.BGP.IPv4Address)
+			}
+			if pool.Spec.IPIPMode == calicov3.IPIPModeCrossSubnet && !isCrossSubnet(route.Gw, *ipNet) {
 				ipip = false
 			}
 			if ipip {
-				i, err := net.InterfaceByName(pool.IPIPInterface)
+				log.Fatalf("ipip not currently supported")
+				i, err := net.InterfaceByName("howtofindthis")
 				if err != nil {
 					return err
 				}
 				route.LinkIndex = i.Index
 				route.SetFlag(netlink.FLAG_ONLINK)
 			} else {
-				log.Println("listing paths")
+				log.Debugf("listing paths")
 				err := s.bgpServer.ListPath(
 					context.Background(),
 					&bgpapi.ListPathRequest{
@@ -271,18 +288,18 @@ func (s *Server) ipamUpdateHandler(pool *model.IPPool) error {
 						Family:    &bgpFamilyUnicastIPv4,
 						Prefixes: []*bgpapi.TableLookupPrefix{
 							&bgpapi.TableLookupPrefix{
-								Prefix: prefix,
+								Prefix: route.Dst.String(),
 							},
 						},
 					},
 					func(destination *bgpapi.Destination) {
-						log.Println("Got destination for prefix %s: %+v", prefix, destination)
+						log.Debugf("Got destination for prefix %s: %+v", route.Dst.String(), destination)
 					},
 				)
 				if err != nil {
 					return errors.Wrap(err, "error listing paths")
 				}
-
+				// XXX TODO
 				// var best *bgpapi.Path = nil
 				// for _, p := range dest.Paths {
 				// 	if p.Best && (best == nil || p)
@@ -318,39 +335,75 @@ func (s *Server) ipamUpdateHandler(pool *model.IPPool) error {
 	return nil
 }
 
-func (s *Server) getNodeASN() (numorstring.ASNumber, error) {
+// TODO: cache this? and watch for changes - reboot in case of changes
+func (s *Server) getDefaultBGPConfig() (*calicov3.BGPConfigurationSpec, error) {
+	b := true
+	conf, err := s.clientv3.BGPConfigurations().Get(context.Background(), "default", options.GetOptions{})
+	if err == nil {
+		// Fill in nil values with default ones
+		if conf.Spec.NodeToNodeMeshEnabled == nil {
+			conf.Spec.NodeToNodeMeshEnabled = &b // Go is great sometimes
+		}
+		if conf.Spec.ASNumber == nil {
+			asn, err := numorstring.ASNumberFromString("64512")
+			if err != nil {
+				return nil, err
+			}
+			conf.Spec.ASNumber = &asn
+		}
+		return &conf.Spec, nil
+	}
+	switch err.(type) {
+	case calicoerr.ErrorResourceDoesNotExist:
+		log.Debug("No \"default\" BGP config found, using default options")
+		ret := &calicov3.BGPConfigurationSpec{
+			LogSeverityScreen:     "INFO",
+			NodeToNodeMeshEnabled: &b,
+		}
+		asn, err := numorstring.ASNumberFromString("64512")
+		if err != nil {
+			return nil, err
+		}
+		ret.ASNumber = &asn
+		return ret, nil
+	default:
+		return nil, err
+	}
+}
+
+func (s *Server) getNodeASN() (*numorstring.ASNumber, error) {
 	return s.getPeerASN(s.nodeName)
 }
 
-func (s *Server) getPeerASN(host string) (numorstring.ASNumber, error) {
+func (s *Server) getPeerASN(host string) (*numorstring.ASNumber, error) {
 	node, err := s.clientv3.Nodes().Get(context.Background(), host, options.GetOptions{})
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if node.Spec.BGP == nil {
-		return 0, fmt.Errorf("host %s is running in policy-only mode")
+		return nil, fmt.Errorf("host %s is running in policy-only mode")
 	}
 	asn := node.Spec.BGP.ASNumber
 	if asn == nil {
-		return s.client.Config().GetGlobalASNumber()
+		return s.defaultBGPConf.ASNumber, nil
 	}
-	return *asn, nil
+	return asn, nil
 
 }
 
 func (s *Server) getGlobalConfig() (*bgpapi.Global, error) {
 	asn, err := s.getNodeASN()
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "error getting current node AS number")
 	}
 	return &bgpapi.Global{
-		As:       uint32(asn),
+		As:       uint32(*asn),
 		RouterId: s.ipv4.String(),
 	}, nil
 }
 
 func (s *Server) isMeshMode() (bool, error) {
-	return s.client.Config().GetNodeToNodeMesh()
+	return *s.defaultBGPConf.NodeToNodeMeshEnabled, nil
 }
 
 func (s *Server) makePath(prefix string, isWithdrawal bool) (*bgpapi.Path, error) {
@@ -414,88 +467,94 @@ func (s *Server) makePath(prefix string, isWithdrawal bool) (*bgpapi.Path, error
 // list of BGP path.
 // using backend directly since libcalico-go doesn't seem to have a method to return
 // assigned prefixes yet.
-func (s *Server) getAssignedPrefixes() ([]*bgpapi.Path, string, error) {
-	var ps []*bgpapi.Path
-	revision := ""
+func (s *Server) getAssignedPrefixes() ([]string, error) {
+	var ps []string
 
 	f := func(ipVersion int) error {
 		blockList, err := s.client.Backend.List(
 			context.Background(),
 			model.BlockAffinityListOptions{Host: os.Getenv(NODENAME), IPVersion: ipVersion},
-			revision,
+			"",
 		)
 		if err != nil {
 			return err
 		}
-		if revision == "" {
-			revision = blockList.Revision
-		}
 		for _, block := range blockList.KVPairs {
+			log.Debugf("Found assigned prefix: %+v", block)
 			key := block.Key.(model.BlockAffinityKey)
-			// value := block.Value.(model.BlockAffinity)
-			path, err := s.makePath(key.CIDR.String(), false)
-			if err != nil {
-				return err
+			value := block.Value.(*model.BlockAffinity)
+			if value.State == model.StateConfirmed && !value.Deleted {
+				ps = append(ps, key.CIDR.String())
 			}
-			ps = append(ps, path)
 		}
 		return nil
 	}
 
 	if s.ipv4 != nil {
 		if err := f(4); err != nil {
-			return nil, "", err
+			return nil, err
 		}
 	}
 	if s.ipv6 != nil {
 		if err := f(6); err != nil {
-			return nil, "", err
+			return nil, err
 		}
 	}
-	return ps, revision, nil
+	return ps, nil
 }
 
 // watchPrefix watches etcd /calico/ipam/v2/host/$NODENAME and add/delete
 // aggregated routes which are assigned to the node.
 // This function also updates policy appropriately.
 func (s *Server) watchPrefix() error {
-	paths, revision, err := s.getAssignedPrefixes()
-	if err != nil {
-		return err
-	}
-	if err = s.updatePrefixSet(paths); err != nil {
-		return err
-	}
-	s.prefixReady <- 1
-
-	prefixWatcher, err := s.client.Backend.Watch(
-		context.Background(),
-		model.BlockAffinityListOptions{Host: os.Getenv(NODENAME)},
-		revision,
-	)
-	if err != nil {
-		return err
-	}
-
-	for update := range prefixWatcher.ResultChan() {
-		del := false
-		pair := update.New
-		switch update.Type {
-		case backendapi.WatchError:
-			return update.Error
-		case backendapi.WatchDeleted:
-			del = true
-			pair = update.Old
-		case backendapi.WatchAdded, backendapi.WatchModified:
-		}
-		key := pair.Key.(model.BlockAffinityKey)
-		path, err := s.makePath(key.CIDR.String(), del)
+	assignedPrefixes := make(map[string]bool)
+	// There is no need to react instantly to these changes, and the calico API
+	// doesn't provide a way to watch for changes, so we just poll every minute
+	for {
+		log.Infof("Reconciliating prefix affinities...")
+		newPrefixes, err := s.getAssignedPrefixes()
 		if err != nil {
-			return err
+			return errors.Wrap(err, "error getting assigned prefixes")
 		}
-		if err = s.updatePrefixSet([]*bgpapi.Path{path}); err != nil {
-			return err
+		log.Debugf("Found %d assigned prefixes", len(newPrefixes))
+		newAssignedPrefixes := make(map[string]bool)
+		var toAdd []*bgpapi.Path
+		for _, prefix := range newPrefixes {
+			if _, found := assignedPrefixes[prefix]; found {
+				log.Debugf("Prefix %s is still assigned to us", prefix)
+				assignedPrefixes[prefix] = true     // Prefix is still there, set value to true so we don't delete it
+				newAssignedPrefixes[prefix] = false // Record it in new map
+			} else {
+				log.Debugf("New assigned prefix: %s", prefix)
+				newAssignedPrefixes[prefix] = false
+				path, err := s.makePath(prefix, false)
+				if err != nil {
+					return errors.Wrap(err, "error making new path for assigned prefix")
+				}
+				toAdd = append(toAdd, path)
+			}
 		}
+		if err = s.updatePrefixSet(toAdd); err != nil {
+			return errors.Wrap(err, "error adding prefix announcements")
+		}
+		// Remove paths that don't exist anymore
+		var toRemove []*bgpapi.Path
+		for p, stillThere := range assignedPrefixes {
+			if !stillThere {
+				log.Infof("Prefix %s is not assigned to us anymore", p)
+				path, err := s.makePath(p, true)
+				if err != nil {
+					return errors.Wrap(err, "error making new path for removed prefix")
+				}
+				toRemove = append(toRemove, path)
+			}
+		}
+		if err = s.updatePrefixSet(toRemove); err != nil {
+			return errors.Wrap(err, "error removing prefix announcements")
+		}
+		assignedPrefixes = newAssignedPrefixes
+
+		time.Sleep(prefixWatchInterval)
 	}
 	return nil
 }
@@ -544,6 +603,7 @@ func (s *Server) addBGPPeer(ip string, asn uint32) error {
 	if err != nil {
 		return err
 	}
+	log.Infof("Adding BGP neighbor: %+v", peer)
 	err = s.bgpServer.AddPeer(context.Background(), &bgpapi.AddPeerRequest{Peer: peer})
 	return err
 }
@@ -553,149 +613,455 @@ func (s *Server) updateBGPPeer(ip string, asn uint32) error {
 	if err != nil {
 		return err
 	}
+	log.Infof("Updating BGP neighbor: %+v", peer)
 	_, err = s.bgpServer.UpdatePeer(context.Background(), &bgpapi.UpdatePeerRequest{Peer: peer})
 	return err
 }
 
 func (s *Server) deleteBGPPeer(ip string) error {
+	log.Infof("Adding BGP neighbor: %s", ip)
 	err := s.bgpServer.DeletePeer(context.Background(), &bgpapi.DeletePeerRequest{Address: ip})
 	return err
 }
 
-func (s *Server) handlePeerUpdate(peer *calicov3.BGPPeer, eventType watch.EventType) error {
-	log.Debugf("Got peer update: %s %+v", eventType, peer)
-	// First check if we should peer with this peer at all
+type bgpPeer struct {
+	AS        uint32
+	SweepFlag bool
+}
+
+func (s *Server) shouldPeer(peer *calicov3.BGPPeer) bool {
 	if peer.Spec.Node != "" && peer.Spec.Node != s.nodeName {
-		return nil
+		return false
 	}
-	// TODO handle NodeSelector / PeerSelector (how?)
-	switch eventType {
-	case watch.Error:
-	case watch.Added:
-		s.addBGPPeer(peer.Spec.PeerIP, uint32(peer.Spec.ASNumber))
-	case watch.Modified:
-		s.updateBGPPeer(peer.Spec.PeerIP, uint32(peer.Spec.ASNumber))
-	case watch.Deleted:
-		s.deleteBGPPeer(peer.Spec.PeerIP)
-	}
-	return nil
+	return true
 }
 
 func (s *Server) watchBGPPeers() error {
-	peers, err := s.clientv3.BGPPeers().List(context.Background(), options.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for _, peer := range peers.Items {
-		s.handlePeerUpdate(&peer, watch.Added)
-	}
+	state := make(map[string]*bgpPeer)
 
-	watcher, err := s.clientv3.BGPPeers().Watch(context.Background(), options.ListOptions{ResourceVersion: peers.ResourceVersion})
-	if err != nil {
-		return err
-	}
-	for update := range watcher.ResultChan() {
-		peer := update.Object
-		switch update.Type {
-		case watch.Added, watch.Modified:
-		case watch.Deleted:
-			peer = update.Previous
-		case watch.Error:
-			return update.Error
+	for {
+		log.Debugf("Reconciliating peers...")
+		peers, err := s.clientv3.BGPPeers().List(context.Background(), options.ListOptions{})
+		if err != nil {
+			return err
 		}
-		s.handlePeerUpdate(peer.(*calicov3.BGPPeer), update.Type)
+		for _, p := range state {
+			p.SweepFlag = true
+		}
+		for _, peer := range peers.Items {
+			if !s.shouldPeer(&peer) {
+				continue
+			}
+			ip := peer.Spec.PeerIP
+			asn := uint32(peer.Spec.ASNumber)
+			existing, ok := state[ip]
+			if ok {
+				existing.SweepFlag = false
+				if existing.AS != asn {
+					existing.AS = asn
+					err := s.updateBGPPeer(ip, asn)
+					if err != nil {
+						return errors.Wrap(err, "error updating BGP peer")
+					}
+				}
+				// Else no change, nothing to do
+			} else {
+				// New peer
+				state[ip] = &bgpPeer{
+					AS:        asn,
+					SweepFlag: false,
+				}
+				err := s.addBGPPeer(ip, asn)
+				if err != nil {
+					return errors.Wrap(err, "error adding BGP peer")
+				}
+			}
+		}
+		// Remove all peers that still have sweepflag to true
+		for ip, peer := range state {
+			if peer.SweepFlag {
+				err := s.deleteBGPPeer(ip)
+				if err != nil {
+					return errors.Wrap(err, "error deleting BGP peer")
+				}
+				delete(state, ip)
+			}
+		}
+
+		revision := peers.ResourceVersion
+		watcher, err := s.clientv3.BGPPeers().Watch(
+			context.Background(),
+			options.ListOptions{ResourceVersion: revision},
+		)
+		if err != nil {
+			return err
+		}
+	watch:
+		for update := range watcher.ResultChan() {
+			switch update.Type {
+			case watch.Added, watch.Modified:
+				peer := update.Object.(*calicov3.BGPPeer)
+				if !s.shouldPeer(peer) {
+					continue
+				}
+				ip := peer.Spec.PeerIP
+				asn := uint32(peer.Spec.ASNumber)
+				existing, ok := state[ip]
+				if ok {
+					if existing.AS != asn {
+						existing.AS = asn
+						err := s.updateBGPPeer(ip, asn)
+						if err != nil {
+							return errors.Wrap(err, "error updating BGP peer")
+						}
+					}
+					// Else no change, nothing to do
+				} else {
+					// New peer
+					state[ip] = &bgpPeer{
+						AS:        asn,
+						SweepFlag: false,
+					}
+					err := s.addBGPPeer(ip, asn)
+					if err != nil {
+						return errors.Wrap(err, "error adding BGP peer")
+					}
+				}
+			case watch.Deleted:
+				peer := update.Previous.(*calicov3.BGPPeer)
+				if !s.shouldPeer(peer) {
+					continue
+				}
+				ip := peer.Spec.PeerIP
+				_, ok := state[ip]
+				if !ok {
+					log.Warnf("Deleted peer %s not found", ip)
+					continue
+				}
+				err := s.deleteBGPPeer(ip)
+				if err != nil {
+					return errors.Wrap(err, "error deleting BGP peer")
+				}
+				delete(state, ip)
+			case watch.Error:
+				switch update.Error.(type) {
+				case calicoerr.ErrorWatchTerminated:
+					break watch
+				default:
+					return errors.Wrap(err, "BGP Peers watch errored")
+				}
+			}
+		}
 	}
 	return nil
 }
 
 // Returns true if the config of the current node has changed and requires a restart
-func (s *Server) handleNodeUpdate(node *calicov3.Node, eventType watch.EventType, isMesh bool) (bool, error) {
-	log.Debugf("Got node update: mesh:%s %s %+v", isMesh, eventType, node)
-	// If the mesh is disabled, discard all updates that aren't on the current node
-	if len(node.Spec.OrchRefs) != 1 {
-		return true, fmt.Errorf("%d OrchRefs found in node, cannot continue", len(node.Spec.OrchRefs))
-	}
-	if node.Spec.OrchRefs[0].NodeName == s.nodeName {
+// Sets node.SweepFlag to false if an existing node is added to allow mark and sweep
+func (s *Server) handleNodeUpdate(
+	state map[string]*node,
+	nodeName string,
+	newSpec *calicov3.NodeSpec,
+	eventType watch.EventType,
+	isMesh bool,
+) (bool, error) {
+	log.Tracef("Got node update: mesh:%t %s %s %+v %v", isMesh, eventType, nodeName, newSpec, state)
+	if nodeName == s.nodeName {
 		// No need to manage ourselves, but if we change we need to restart and reconfigure
-		return true, nil
+		if eventType == watch.Deleted {
+			return true, nil
+		} else {
+			old, found := state[nodeName]
+			if found {
+				// Check that there were no changes, restart if our BGP config changed
+				old.SweepFlag = false
+				log.Tracef("node comparison: old:%+v new:%+v", old.Spec.BGP, newSpec.BGP)
+				return !reflect.DeepEqual(old.Spec.BGP, newSpec.BGP), nil
+			} else {
+				// First pass, create local node
+				state[nodeName] = &node{
+					Spec:      newSpec,
+					SweepFlag: false,
+				}
+				return false, nil
+			}
+		}
 	}
-	if !isMesh || node.Spec.BGP == nil { // No BGP config for this node
+
+	// If the mesh is disabled, discard all updates that aren't on the current node
+	if !isMesh || newSpec.BGP == nil { // No BGP config for this node
 		return false, nil
 	}
+	// This ensures that nodes that don't have a BGP Spec are never present in the state map
+
+	var v4IP, v6IP net.IP
 	var asNumber uint32
 	var err error
-	if node.Spec.BGP.ASNumber == nil {
-		asn, err := s.client.Config().GetGlobalASNumber() // TODO: cache this?
-		asNumber = uint32(asn)
-		if err != nil {
-			return false, err
-		}
+	if newSpec.BGP.ASNumber == nil {
+		asNumber = uint32(*s.defaultBGPConf.ASNumber)
 	} else {
-		asNumber = uint32(*node.Spec.BGP.ASNumber)
+		asNumber = uint32(*newSpec.BGP.ASNumber)
 	}
-	v4IP, _, err := net.ParseCIDR(node.Spec.BGP.IPv4Address)
-	if err != nil {
-		return false, nil
-	}
-	v6Set := node.Spec.BGP.IPv6Address != ""
-	var v6IP net.IP
-	if v6Set {
-		v6IP, _, err = net.ParseCIDR(node.Spec.BGP.IPv6Address)
+	v4Set := newSpec.BGP.IPv4Address != ""
+	if v4Set {
+		v4IP, _, err = net.ParseCIDR(newSpec.BGP.IPv4Address)
 		if err != nil {
-			return false, err
+			return false, errors.Wrapf(err, "cannot parse node v4: %s", newSpec.BGP.IPv4Address)
+		}
+	}
+	v6Set := newSpec.BGP.IPv6Address != ""
+	if v6Set {
+		v6IP, _, err = net.ParseCIDR(newSpec.BGP.IPv6Address)
+		if err != nil {
+			return false, errors.Wrapf(err, "cannot parse node v6: %s", newSpec.BGP.IPv6Address)
 		}
 	}
 	switch eventType {
-	case watch.Error:
-	case watch.Added:
-		s.addBGPPeer(v4IP.String(), asNumber) // v4 seems to be mandatory
-		if v6Set {
-			s.addBGPPeer(v6IP.String(), asNumber)
-		}
-	case watch.Modified:
-		// TODO this doesn't work if the IP address changes
-		// need to get the old node and delete the corresponding peer in that case
-		s.updateBGPPeer(v4IP.String(), asNumber)
-		if v6Set {
-			s.updateBGPPeer(v6IP.String(), asNumber)
+	case watch.Error: // Shouldn't happen
+	case watch.Added, watch.Modified:
+		old, found := state[nodeName]
+		if found {
+			log.Tracef("node comparison: old:%+v new:%+v", old.Spec.BGP, newSpec.BGP)
+			var oldASN uint32
+			if old.Spec.BGP.ASNumber != nil {
+				oldASN = uint32(*old.Spec.BGP.ASNumber)
+			} else {
+				oldASN = uint32(*s.defaultBGPConf.ASNumber)
+			}
+			oldV4Set := old.Spec.BGP.IPv4Address != ""
+			oldV6Set := old.Spec.BGP.IPv6Address != ""
+			var oldV4IP, oldV6IP net.IP
+			if oldV4Set { // These shouldn't error since they have already been parsed successfully
+				oldV4IP, _, _ = net.ParseCIDR(old.Spec.BGP.IPv4Address)
+			}
+			if oldV6Set {
+				oldV6IP, _, _ = net.ParseCIDR(old.Spec.BGP.IPv6Address)
+			}
+
+			// Compare IPs and ASN
+			if v4Set {
+				if oldV4Set {
+					if old.Spec.BGP.IPv4Address != newSpec.BGP.IPv4Address {
+						// IP change, delete and re-add neighbor
+						err = s.deleteBGPPeer(oldV4IP.String())
+						if err != nil {
+							return false, errors.Wrapf(err, "error deleting peer %s", oldV4IP.String())
+						}
+						err = s.addBGPPeer(v4IP.String(), asNumber)
+						if err != nil {
+							return false, errors.Wrapf(err, "error adding peer %s", v4IP.String())
+						}
+					} else {
+						// Check for ASN change
+						if oldASN != asNumber {
+							// Update peer
+							err = s.updateBGPPeer(v4IP.String(), asNumber)
+							if err != nil {
+								return false, errors.Wrapf(err, "error adding peer %s", v4IP.String())
+							}
+						} // Otherwise nothing to do for v4
+					}
+				} else {
+					err = s.addBGPPeer(v4IP.String(), asNumber)
+					if err != nil {
+						return false, errors.Wrapf(err, "error adding peer %s", v4IP.String())
+					}
+				}
+			} else {
+				// No v4 address on new node
+				if oldV4Set {
+					// Delete old neighbor
+					err = s.deleteBGPPeer(oldV4IP.String())
+					if err != nil {
+						return false, errors.Wrapf(err, "error deleting peer %s", oldV4IP.String())
+					}
+				} // Else nothing to do for v6
+			}
+			if v6Set {
+				if oldV6Set {
+					if old.Spec.BGP.IPv6Address != newSpec.BGP.IPv6Address {
+						// IP change, delete and re-add neighbor
+						err = s.deleteBGPPeer(oldV6IP.String())
+						if err != nil {
+							return false, errors.Wrapf(err, "error deleting peer %s", oldV6IP.String())
+						}
+						err = s.addBGPPeer(v6IP.String(), asNumber)
+						if err != nil {
+							return false, errors.Wrapf(err, "error adding peer %s", v6IP.String())
+						}
+					} else {
+						// Check for ASN change
+						if oldASN != asNumber {
+							// Update peer
+							err = s.updateBGPPeer(v6IP.String(), asNumber)
+							if err != nil {
+								return false, errors.Wrapf(err, "error adding peer %s", v6IP.String())
+							}
+						} // Otherwise nothing to do for v6
+					}
+				} else {
+					err = s.addBGPPeer(v6IP.String(), asNumber)
+					if err != nil {
+						return false, errors.Wrapf(err, "error adding peer %s", v6IP.String())
+					}
+				}
+			} else {
+				// No v6 address on new node
+				if oldV6Set {
+					// Delete old neighbor
+					err = s.deleteBGPPeer(oldV6IP.String())
+					if err != nil {
+						return false, errors.Wrapf(err, "error deleting peer %s", oldV6IP.String())
+					}
+				} // Else nothing to do for v6
+			}
+			old.SweepFlag = false
+			old.Spec = newSpec
+		} else {
+			// New node
+			state[nodeName] = &node{
+				Spec:      newSpec,
+				SweepFlag: false,
+			}
+			if v4Set {
+				err = s.addBGPPeer(v4IP.String(), asNumber)
+				if err != nil {
+					return false, errors.Wrapf(err, "error adding peer %s", v4IP.String())
+				}
+			}
+			if v6Set {
+				err = s.addBGPPeer(v6IP.String(), asNumber)
+				if err != nil {
+					return false, errors.Wrapf(err, "error adding peer %s", v6IP.String())
+				}
+			}
 		}
 	case watch.Deleted:
-		s.deleteBGPPeer(v4IP.String())
-		if v6Set {
-			s.deleteBGPPeer(v6IP.String())
+		_, found := state[nodeName]
+		// This assumes that the old spec and the new spec are identical.
+		if found {
+			if v4Set {
+				err = s.deleteBGPPeer(v4IP.String())
+				if err != nil {
+					return false, errors.Wrapf(err, "error deleting peer %s", v4IP.String())
+				}
+			}
+			if v6Set {
+				err = s.deleteBGPPeer(v6IP.String())
+				if err != nil {
+					return false, errors.Wrapf(err, "error deleting peer %s", v6IP.String())
+				}
+			}
+			delete(state, nodeName)
+		} else {
+			return false, fmt.Errorf("Node to delete not found")
 		}
+
 	}
 	return false, nil
+}
+
+type node struct {
+	Spec      *calicov3.NodeSpec
+	SweepFlag bool
+}
+
+func nodeSpecCopy(s *calicov3.NodeSpec) *calicov3.NodeSpec {
+	r := &calicov3.NodeSpec{
+		IPv4VXLANTunnelAddr: s.IPv4VXLANTunnelAddr,
+		VXLANTunnelMACAddr:  s.VXLANTunnelMACAddr,
+		OrchRefs:            append([]calicov3.OrchRef{}, s.OrchRefs...),
+	}
+	if s.BGP != nil {
+		r.BGP = &calicov3.NodeBGPSpec{
+			IPv4Address:             s.BGP.IPv4Address,
+			IPv6Address:             s.BGP.IPv6Address,
+			IPv4IPIPTunnelAddr:      s.BGP.IPv4IPIPTunnelAddr,
+			RouteReflectorClusterID: s.BGP.RouteReflectorClusterID,
+		}
+		if s.BGP.ASNumber != nil {
+			r.BGP.ASNumber = new(numorstring.ASNumber)
+			*r.BGP.ASNumber = *s.BGP.ASNumber
+		}
+	}
+	return r
 }
 
 func (s *Server) watchNodes() error {
 	isMesh, err := s.isMeshMode()
 	if err != nil {
-		return err
+		return errors.Wrap(err, "error determining whether node mesh is enabled")
 	}
-	// TODO: Get and watch only ourselves if there is no mesh
-	nodes, err := s.clientv3.Nodes().List(context.Background(), options.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for _, node := range nodes.Items {
-		s.handleNodeUpdate(&node, watch.Added, isMesh)
-	}
+	state := make(map[string]*node)
 
-	watcher, err := s.clientv3.Nodes().Watch(context.Background(), options.ListOptions{ResourceVersion: nodes.ResourceVersion})
-	if err != nil {
-		return err
-	}
-	for update := range watcher.ResultChan() {
-		node := update.Object
-		switch update.Type {
-		case watch.Added, watch.Modified:
-		case watch.Deleted:
-			node = update.Previous
-		case watch.Error:
-			return update.Error
+	for {
+		// TODO: Get and watch only ourselves if there is no mesh
+		log.Info("Syncing nodes...")
+		nodes, err := s.clientv3.Nodes().List(context.Background(), options.ListOptions{})
+		if err != nil {
+			return errors.Wrap(err, "error listing nodes")
 		}
-		s.handleNodeUpdate(node.(*calicov3.Node), update.Type, isMesh)
+		for _, n := range state {
+			n.SweepFlag = true
+		}
+		for _, node := range nodes.Items {
+			spec := nodeSpecCopy(&node.Spec)
+			shouldRestart, err := s.handleNodeUpdate(state, node.Name, spec, watch.Added, isMesh)
+			if err != nil {
+				return errors.Wrap(err, "error handling node update")
+			}
+			if shouldRestart {
+				log.Warnf("Current node configuration changed, restarting")
+				return nil
+			}
+		}
+		for name, node := range state {
+			if node.SweepFlag {
+				shouldRestart, err := s.handleNodeUpdate(state, name, node.Spec, watch.Deleted, isMesh)
+				if err != nil {
+					return errors.Wrap(err, "error handling node update")
+				}
+				if shouldRestart {
+					log.Warnf("Current node configuration changed, restarting")
+					return nil
+				}
+			}
+		}
+
+		watcher, err := s.clientv3.Nodes().Watch(
+			context.Background(),
+			options.ListOptions{ResourceVersion: nodes.ResourceVersion},
+		)
+		if err != nil {
+			return errors.Wrap(err, "cannot watch nodes")
+		}
+	watch:
+		for update := range watcher.ResultChan() {
+			var node *calicov3.Node
+			switch update.Type {
+			case watch.Error:
+				switch update.Error.(type) {
+				case calicoerr.ErrorWatchTerminated:
+					break watch
+				default:
+					return errors.Wrap(update.Error, "error while watching for Node updates")
+				}
+			case watch.Modified, watch.Added:
+				node = update.Object.(*calicov3.Node)
+			case watch.Deleted:
+				node = update.Previous.(*calicov3.Node)
+			}
+
+			spec := nodeSpecCopy(&node.Spec)
+			shouldRestart, err := s.handleNodeUpdate(state, node.Name, spec, update.Type, isMesh)
+			if err != nil {
+				return errors.Wrap(err, "error handling node update")
+			}
+			if shouldRestart {
+				log.Warnf("Current node configuration changed, restarting")
+				return nil
+			}
+		}
 	}
 	return nil
 }
@@ -714,12 +1080,12 @@ func (s *Server) watchKernelRoute() error {
 		return err
 	}
 	for update := range ch {
-		log.Printf("kernel update: %s", update)
+		log.Debugf("kernel update: %s", update)
 		if update.Table == syscall.RT_TABLE_MAIN &&
 			(update.Protocol == syscall.RTPROT_KERNEL || update.Protocol == syscall.RTPROT_BOOT) {
 			// TODO: handle ipPool deletion. RTM_DELROUTE message
 			// can belong to previously valid ipPool.
-			if s.ipam.match(update.Dst.String()) == nil {
+			if s.ipam.match(*update.Dst) == nil {
 				continue
 			}
 			isWithdrawal := false
@@ -728,17 +1094,16 @@ func (s *Server) watchKernelRoute() error {
 				isWithdrawal = true
 			case syscall.RTM_NEWROUTE:
 			default:
-				log.Printf("unhandled rtm type: %d", update.Type)
+				log.Debugf("unhandled rtm type: %d", update.Type)
 				continue
 			}
 			path, err := s.makePath(update.Dst.String(), isWithdrawal)
 			if err != nil {
 				return err
 			}
-			log.Printf("made path from kernel update: %s", path)
+			log.Debugf("made path from kernel update: %s", path)
 			if _, err = s.bgpServer.AddPath(context.Background(), &bgpapi.AddPathRequest{
 				TableType: bgpapi.TableType_GLOBAL,
-				VrfId:     "",
 				Path:      path,
 			}); err != nil {
 				return err
@@ -771,7 +1136,7 @@ func (s *Server) loadKernelRoute() error {
 		if route.Dst == nil {
 			continue
 		}
-		if s.ipam.match(route.Dst.String()) == nil {
+		if s.ipam.match(*route.Dst) == nil {
 			continue
 		}
 		if route.Protocol == syscall.RTPROT_KERNEL || route.Protocol == syscall.RTPROT_BOOT {
@@ -782,7 +1147,6 @@ func (s *Server) loadKernelRoute() error {
 			log.Printf("made path from kernel route: %s", path)
 			if _, err = s.bgpServer.AddPath(context.Background(), &bgpapi.AddPathRequest{
 				TableType: bgpapi.TableType_GLOBAL,
-				VrfId:     "",
 				Path:      path,
 			}); err != nil {
 				return err
@@ -817,29 +1181,49 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 	if nexthop == nil {
 		return fmt.Errorf("Cannot determine path nexthop: %+v", path)
 	}
-	nlri := path.GetNlri()
-	dst, _ := netlink.ParseIPNet(nlri.String())
+	ipAddrPrefixNlri := &bgpapi.IPAddressPrefix{}
+	var dst net.IPNet
+	isV4 := false
+	if err := ptypes.UnmarshalAny(path.Nlri, ipAddrPrefixNlri); err == nil {
+		dst.IP = net.ParseIP(ipAddrPrefixNlri.Prefix)
+		if dst.IP == nil {
+			return fmt.Errorf("Cannot parse nlri addr: %s", ipAddrPrefixNlri.Prefix)
+		} else if dst.IP.To4() == nil {
+			dst.Mask = net.CIDRMask(int(ipAddrPrefixNlri.PrefixLen), 128)
+		} else {
+			dst.Mask = net.CIDRMask(int(ipAddrPrefixNlri.PrefixLen), 32)
+			isV4 = true
+		}
+	} else {
+		return fmt.Errorf("Cannot handle Nlri: %+v", path.Nlri)
+	}
+
 	route := &netlink.Route{
-		Dst:      dst,
+		Dst:      &dst,
 		Gw:       nexthop,
 		Protocol: RTPROT_GOBGP,
 	}
 
 	ipip := false
-	if dst.IP.To4() != nil {
-		if p := s.ipam.match(nlri.String()); p != nil {
-			ipip = p.IPIPMode != encap.Undefined
+	if isV4 {
+		if p := s.ipam.match(dst); p != nil {
+			ipip = p.Spec.IPIPMode != calicov3.IPIPModeNever
 
-			node, err := s.client.Nodes().Get(calicoapi.NodeMetadata{Name: s.nodeName})
+			node, err := s.clientv3.Nodes().Get(context.Background(), s.nodeName, options.GetOptions{}) // TODO cache, we only do this to get the address subnet
 			if err != nil {
-				return err
+				return errors.Wrap(err, "error getting node config")
+			}
+			_, ipNet, err := net.ParseCIDR(node.Spec.BGP.IPv4Address)
+			if err != nil {
+				return errors.Wrapf(err, "error parsing node IPv4 network: %s", node.Spec.BGP.IPv4Address)
 			}
 
-			if p.IPIPMode == encap.CrossSubnet && !isCrossSubnet(route.Gw, node.Spec.BGP.IPv4Address.Network().IPNet) {
+			if p.Spec.IPIPMode == calicov3.IPIPModeCrossSubnet && !isCrossSubnet(route.Gw, *ipNet) {
 				ipip = false
 			}
 			if ipip {
-				i, err := net.InterfaceByName(p.IPIPInterface)
+				log.Fatalf("ipip not supported at this time")
+				i, err := net.InterfaceByName("howtofindthis")
 				if err != nil {
 					return err
 				}
@@ -851,18 +1235,18 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 	}
 
 	if path.IsWithdraw {
-		log.Printf("removed route %s from VPP", nlri)
-		return netlink.RouteDel(route)
+		log.Debugf("removed route %s from kernel", dst.String())
+		return errors.Wrap(netlink.RouteDel(route), "error deleting route")
 	}
 	if !ipip {
 		gw, err := recursiveNexthopLookup(nexthop)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "next hop resolve failed")
 		}
 		route.Gw = gw
 	}
-	log.Printf("added route %s to kernel %s", nlri, route)
-	return netlink.RouteReplace(route)
+	log.Printf("added route %s to kernel %+v", dst.String(), route)
+	return errors.Wrap(netlink.RouteReplace(route), "error replacing route")
 }
 
 // watchBGPPath watches BGP routes from other peers and inject them into
@@ -871,7 +1255,7 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 func (s *Server) watchBGPPath() error {
 	var err error
 	startMonitor := func(f *bgpapi.Family) (context.CancelFunc, error) {
-		ctx, stopFunc := context.WithCancel(nil)
+		ctx, stopFunc := context.WithCancel(context.Background())
 		err := s.bgpServer.MonitorTable(
 			ctx,
 			&bgpapi.MonitorTableRequest{
@@ -885,8 +1269,8 @@ func (s *Server) watchBGPPath() error {
 					log.Warnf("nil path update, skipping")
 					return
 				}
-				log.Infof("Got path update: %+v", path)
-				if !path.IsFromExternal {
+				log.Infof("Got path update from %s as %u", path.SourceId, path.SourceAsn)
+				if path.NeighborIp == "<nil>" { // Weird GoBGP API behaviour
 					log.Debugf("Ignoring internal path")
 					return
 				}
@@ -902,13 +1286,13 @@ func (s *Server) watchBGPPath() error {
 	if s.hasV4 {
 		stopV4Monitor, err = startMonitor(&bgpFamilyUnicastIPv4)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "error starting v4 path monitor")
 		}
 	}
 	if s.hasV6 {
 		stopV6Monitor, err = startMonitor(&bgpFamilyUnicastIPv4)
 		if err != nil {
-			return err
+			return errors.Wrap(err, "error starting v6 path monitor")
 		}
 	}
 	for family := range s.reloadCh {
@@ -943,7 +1327,7 @@ func (s *Server) initialPolicySetting() error {
 	}
 	for _, name := range []string{aggregatedPrefixSetName, hostPrefixSetName} {
 		if err := createEmptyPrefixSet(name); err != nil {
-			return err
+			return errors.Wrapf(err, "error creating prefix set %s", name)
 		}
 	}
 	// intended to work as same as 'calico_pools' export filter of BIRD configuration
@@ -979,11 +1363,11 @@ func (s *Server) initialPolicySetting() error {
 		Policy:                  definition,
 		ReferExistingStatements: false},
 	); err != nil {
-		return err
+		return errors.Wrap(err, "error adding policy")
 	}
-	return s.bgpServer.AddPolicyAssignment(context.Background(), &bgpapi.AddPolicyAssignmentRequest{
+	err := s.bgpServer.AddPolicyAssignment(context.Background(), &bgpapi.AddPolicyAssignmentRequest{
 		Assignment: &bgpapi.PolicyAssignment{
-			Name:      "",
+			Name:      "global",
 			Direction: bgpapi.PolicyDirection_EXPORT,
 			Policies: []*bgpapi.Policy{
 				definition,
@@ -991,6 +1375,7 @@ func (s *Server) initialPolicySetting() error {
 			DefaultAction: bgpapi.RouteAction_ACCEPT,
 		},
 	})
+	return errors.Wrap(err, "cannot add policy assignment")
 }
 
 // TODO rename this
@@ -998,7 +1383,7 @@ func (s *Server) updatePrefixSet(paths []*bgpapi.Path) error {
 	for _, path := range paths {
 		err := s._updatePrefixSet(path)
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "error processing path %+v", path)
 		}
 	}
 	return nil
@@ -1013,19 +1398,28 @@ func (s *Server) updatePrefixSet(paths []*bgpapi.Path) error {
 //      add "192.168.1.0/26..32" to 'host'       set
 //
 func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
-	prefix := path.GetNlri().String()
-	del := path.IsWithdraw
-	_, ipNet, err := net.ParseCIDR(prefix)
-	if err != nil {
-		return err
+	log.Infof("Updating local prefix set with %+v", path)
+	ipAddrPrefixNlri := &bgpapi.IPAddressPrefix{}
+	var prefixAddr string = ""
+	var prefixLen uint32 = 0xffff
+	var err error = nil
+	if err := ptypes.UnmarshalAny(path.Nlri, ipAddrPrefixNlri); err == nil {
+		prefixAddr = ipAddrPrefixNlri.Prefix
+		prefixLen = ipAddrPrefixNlri.PrefixLen
+	} else {
+		return fmt.Errorf("Cannot handle Nlri: %+v", path.Nlri)
 	}
-	// Add/remove path to aggregated prefix set, allowing to export it
+	del := path.IsWithdraw
+	prefix := prefixAddr + "/" + strconv.FormatUint(uint64(prefixLen), 10)
+	// Add path to aggregated prefix set, allowing to export it
 	ps := &bgpapi.DefinedSet{
 		DefinedType: bgpapi.DefinedType_PREFIX,
 		Name:        aggregatedPrefixSetName,
 		Prefixes: []*bgpapi.Prefix{
 			&bgpapi.Prefix{
-				IpPrefix: prefix,
+				IpPrefix:      prefix,
+				MaskLengthMin: prefixLen,
+				MaskLengthMax: prefixLen,
 			},
 		},
 	}
@@ -1041,12 +1435,12 @@ func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
 		)
 	}
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "error adding / deleting defined set %+v", ps)
 	}
-	// Add/remove all contained prefixes to host prefix set, forbidding the export of containers /32s or /128s
-	min, _ := ipNet.Mask.Size()
-	max := 32
-	if ipNet.IP.To4() == nil {
+	// Add all contained prefixes to host prefix set, forbidding the export of containers /32s or /128s
+	max := uint32(32)
+	if strings.Contains(prefixAddr, ":") {
+		log.Debugf("Address %s detected as v6", prefixAddr)
 		max = 128
 	}
 	ps = &bgpapi.DefinedSet{
@@ -1055,8 +1449,8 @@ func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
 		Prefixes: []*bgpapi.Prefix{
 			&bgpapi.Prefix{
 				IpPrefix:      prefix,
-				MaskLengthMax: uint32(max),
-				MaskLengthMin: uint32(min),
+				MaskLengthMax: max,
+				MaskLengthMin: prefixLen,
 			},
 		},
 	}
@@ -1072,25 +1466,23 @@ func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
 		)
 	}
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "error adding / deleting defined set %+v", ps)
 	}
 
 	// Finally add/remove path to/from the main table to annouce it to our peers
 	if del {
 		err = s.bgpServer.DeletePath(context.Background(), &bgpapi.DeletePathRequest{
 			TableType: bgpapi.TableType_GLOBAL,
-			VrfId:     "",
 			Path:      path,
 		})
 	} else {
 		_, err = s.bgpServer.AddPath(context.Background(), &bgpapi.AddPathRequest{
 			TableType: bgpapi.TableType_GLOBAL,
-			VrfId:     "",
 			Path:      path,
 		})
 	}
 
-	return err
+	return errors.Wrapf(err, "error adding / deleting path %+v", path)
 }
 
 func main() {

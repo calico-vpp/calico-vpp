@@ -1,3 +1,3 @@
 # Calico VPP dataplane
 
-This repo contains the integration between Calico and VPP.
+This repo contains an integration between Calico and VPP. This is a work in progress.

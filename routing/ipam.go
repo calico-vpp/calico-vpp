@@ -16,35 +16,36 @@
 package main
 
 import (
-	"bytes"
 	"net"
-	"reflect"
 	"sync"
 
-	backendapi "github.com/projectcalico/libcalico-go/lib/backend/api"
-	"github.com/projectcalico/libcalico-go/lib/backend/model"
-	calicocli "github.com/projectcalico/libcalico-go/lib/client"
+	"github.com/pkg/errors"
+	calicov3 "github.com/projectcalico/libcalico-go/lib/apis/v3"
+	calicocliv3 "github.com/projectcalico/libcalico-go/lib/clientv3"
+	calicoerr "github.com/projectcalico/libcalico-go/lib/errors"
+	"github.com/projectcalico/libcalico-go/lib/options"
+	"github.com/projectcalico/libcalico-go/lib/watch"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 )
 
 // contains returns true if the IPPool contains 'prefix'
-func contains(pool *model.IPPool, prefix string) (bool, error) {
-	ip, prefixNet, err := net.ParseCIDR(prefix)
-	if err != nil {
-		return false, err
-	}
-	poolCIDRLen, poolCIDRBits := pool.CIDR.Mask.Size()
-	prefixLen, prefixBits := prefixNet.Mask.Size()
-	return poolCIDRBits == prefixBits && pool.CIDR.Contains(ip) && prefixLen >= poolCIDRLen, nil
+func contains(pool *calicov3.IPPool, prefix net.IPNet) (bool, error) {
+	_, poolCIDR, _ := net.ParseCIDR(pool.Spec.CIDR) // this field is validated so this should never error
+	poolCIDRLen, poolCIDRBits := poolCIDR.Mask.Size()
+	prefixLen, prefixBits := prefix.Mask.Size()
+	return poolCIDRBits == prefixBits && poolCIDR.Contains(prefix.IP) && prefixLen >= poolCIDRLen, nil
 }
 
-// Compare networks only
-func equalPools(a *model.IPPool, b *model.IPPool) bool {
-	if !a.CIDR.IP.Equal(b.CIDR.IP) {
+// Compare only the fields that make a difference for this agent i.e. the fields that have an impact on routing
+func equalPools(a *calicov3.IPPool, b *calicov3.IPPool) bool {
+	if a.Spec.CIDR != b.Spec.CIDR {
 		return false
 	}
-	if bytes.Compare(a.CIDR.Mask, b.CIDR.Mask) != 0 {
+	if a.Spec.IPIPMode != b.Spec.IPIPMode {
+		return false
+	}
+	if a.Spec.VXLANMode != b.Spec.VXLANMode {
 		return false
 	}
 	return true
@@ -52,16 +53,16 @@ func equalPools(a *model.IPPool, b *model.IPPool) bool {
 
 type ipamCache struct {
 	mu            sync.RWMutex
-	m             map[string]*model.IPPool
-	client        *calicocli.Client
-	updateHandler func(*model.IPPool) error
+	m             map[string]*calicov3.IPPool
+	client        calicocliv3.Interface
+	updateHandler func(*calicov3.IPPool) error
 	ready         bool
 	readyCond     *sync.Cond
 }
 
 // match checks whether we have an IP pool which contains the given prefix.
 // If we have, it returns the pool.
-func (c *ipamCache) match(prefix string) *model.IPPool {
+func (c *ipamCache) match(prefix net.IPNet) *calicov3.IPPool {
 	if !c.ready {
 		c.readyCond.L.Lock()
 		for !c.ready {
@@ -87,76 +88,94 @@ func (c *ipamCache) match(prefix string) *model.IPPool {
 // update updates the internal map with IPAM updates when the update
 // is new addtion to the map or changes the existing item, it calls
 // updateHandler
-func (c *ipamCache) update(pair *model.KVPair, del bool) error {
-	if reflect.TypeOf(pair.Value) != reflect.TypeOf(model.IPPool{}) {
-		log.Panicf("unknown parameter type: %s", reflect.TypeOf(pair.Value))
-	}
-	pool := pair.Value.(model.IPPool)
-	key := pair.Key.String()
+func (c *ipamCache) update(pool *calicov3.IPPool, del bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	log.Printf("update ipam cache: %s, %v, %t", key, pool, del)
+	log.Debugf("update ipam cache: %+v, %t", pool.Spec, del)
+	key := pool.Spec.CIDR
 
 	existing := c.m[key]
 	if del {
-		delete(c.m, key)
+		delete(c.m, key) // Should we cal updateHandler here (and modify it to handle deletions)?
 		return nil
-	} else if equalPools(&pool, existing) {
+	} else if existing != nil && equalPools(pool, existing) {
 		return nil
 	}
 
-	c.m[key] = &pool
+	c.m[key] = pool
 
 	if c.updateHandler != nil {
-		return c.updateHandler(&pool)
+		return c.updateHandler(pool)
 	}
 	return nil
 }
 
 // sync synchronizes the IP pools stored under /calico/v1/ipam
 func (c *ipamCache) sync() error {
-	poolsList, err := c.client.Backend.List(context.Background(), model.IPPoolListOptions{}, "")
-	if err != nil {
-		return err
-	}
-	for _, pool := range poolsList.KVPairs {
-		err := c.update(pool, false)
+	for {
+		log.Info("Reconciliating pools...")
+		poolsList, err := c.client.IPPools().List(context.Background(), options.ListOptions{})
 		if err != nil {
-			return err
+			return errors.Wrap(err, "error listing pools")
 		}
-	}
-
-	c.ready = true
-	c.readyCond.Broadcast()
-
-	startRevision := poolsList.Revision
-	poolsWatcher, err := c.client.Backend.Watch(context.Background(), model.IPPoolListOptions{}, startRevision)
-	if err != nil {
-		return err
-	}
-	for update := range poolsWatcher.ResultChan() {
-		del := false
-		pair := update.New
-		switch update.Type {
-		case backendapi.WatchError:
-			return update.Error
-		case backendapi.WatchDeleted:
-			del = true
-			pair = update.Old
-		case backendapi.WatchAdded, backendapi.WatchModified:
+		sweepMap := make(map[string]bool)
+		for _, pool := range poolsList.Items {
+			sweepMap[pool.Spec.CIDR] = true
+			err := c.update(&pool, false)
+			if err != nil {
+				return errors.Wrap(err, "error processing startup pool update")
+			}
 		}
-		if err = c.update(pair, del); err != nil {
-			return err
+		// Sweep phase
+		for key, pool := range c.m {
+			found := sweepMap[key]
+			if !found {
+				c.update(pool, true)
+			}
+		}
+
+		if !c.ready {
+			c.ready = true
+			c.readyCond.Broadcast()
+		}
+
+		poolsWatcher, err := c.client.IPPools().Watch(
+			context.Background(),
+			options.ListOptions{ResourceVersion: poolsList.ResourceVersion},
+		)
+		if err != nil {
+			return errors.Wrap(err, "error watching pools")
+		}
+	watch:
+		for update := range poolsWatcher.ResultChan() {
+			del := false
+			pool := update.Object
+			switch update.Type {
+			case watch.Error:
+				switch update.Error.(type) {
+				case calicoerr.ErrorWatchTerminated:
+					break watch
+				default:
+					return errors.Wrap(update.Error, "error while watching IPPools")
+				}
+			case watch.Deleted:
+				del = true
+				pool = update.Previous
+			case watch.Added, watch.Modified:
+			}
+			if err = c.update(pool.(*calicov3.IPPool), del); err != nil {
+				return errors.Wrap(err, "error processing pool update")
+			}
 		}
 	}
 	return nil
 }
 
 // create new IPAM cache
-func newIPAMCache(client *calicocli.Client, updateHandler func(*model.IPPool) error) *ipamCache {
+func newIPAMCache(client calicocliv3.Interface, updateHandler func(*calicov3.IPPool) error) *ipamCache {
 	cond := sync.NewCond(&sync.Mutex{})
 	return &ipamCache{
-		m:             make(map[string]*model.IPPool),
+		m:             make(map[string]*calicov3.IPPool),
 		updateHandler: updateHandler,
 		client:        client,
 		readyCond:     cond,
