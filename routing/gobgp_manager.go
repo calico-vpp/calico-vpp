@@ -73,28 +73,6 @@ type IpamCache interface {
 // VERSION is filled out during the build process (using git describe output)
 var VERSION string
 
-// recursiveNexthopLookup returns bgpNexthop's actual nexthop
-// In GCE environment, the interface address is /32 and the BGP nexthop is
-// off-subnet. This function looks up kernel RIB and returns a nexthop to
-// reach the BGP nexthop.
-// When the BGP nexthop can be reached with a connected route,
-// this function returns the BGP nexthop.
-func recursiveNexthopLookup(bgpNexthop net.IP) (net.IP, error) {
-	routes, err := netlink.RouteGet(bgpNexthop)
-	if err != nil {
-		return nil, err
-	}
-	if len(routes) == 0 {
-		return nil, fmt.Errorf("no route for path: %s", bgpNexthop)
-	}
-	r := routes[0]
-	if r.Gw != nil {
-		return r.Gw, nil
-	}
-	// bgpNexthop can be reached by a connected route
-	return bgpNexthop, nil
-}
-
 func cleanUpRoutes() error {
 	log.Println("Clean up injected routes")
 	filter := &netlink.Route{
@@ -128,6 +106,7 @@ type Server struct {
 	ipam           IpamCache
 	reloadCh       chan string
 	prefixReady    chan int
+	vpp            *vppInterface
 }
 
 func NewServer() (*Server, error) {
@@ -158,6 +137,11 @@ func NewServer() (*Server, error) {
 		hasV6 = false
 	}
 
+	vpp, err := newVppInterface("", log.WithFields(log.Fields{"subcomponent": "vpp-api"}))
+	if err != nil {
+		return nil, errors.Wrap(err, "error creating VPP client interface")
+	}
+
 	bgpServer := bgpserver.NewBgpServer()
 
 	server := Server{
@@ -171,6 +155,7 @@ func NewServer() (*Server, error) {
 		ipv6:        ipv6,
 		reloadCh:    make(chan string),
 		prefixReady: make(chan int),
+		vpp:         vpp,
 	}
 
 	BGPConf, err := server.getDefaultBGPConfig()
@@ -240,99 +225,8 @@ func isCrossSubnet(gw net.IP, subnet net.IPNet) bool {
 
 func (s *Server) ipamUpdateHandler(pool *calicov3.IPPool) error {
 	log.Debugf("Pool %s updated, handler called", pool.Spec.CIDR)
-	filter := &netlink.Route{
-		Protocol: RTPROT_GOBGP,
-	}
-	list, err := netlink.RouteListFiltered(netlink.FAMILY_V4, filter, netlink.RT_FILTER_PROTOCOL)
-	if err != nil {
-		return errors.Wrap(err, "error getting kernel routes")
-	}
-	node, err := s.clientv3.Nodes().Get(context.Background(), s.nodeName, options.GetOptions{})
-	if err != nil {
-		return errors.Wrap(err, "error getting node config")
-	} // TODO cache this we only do this to get the IPv4 subnet of the node from cross-subnet IPIP mode
-
-	// Check if we need to update any of the routes we installed
-	for _, route := range list {
-		if route.Dst == nil {
-			continue
-		}
-		inPool, err := contains(pool, *route.Dst)
-		if err != nil {
-			return errors.Wrapf(err, "error determining whether prefix %s is in pool", route.Dst.String())
-		}
-		if inPool {
-			ipip := pool.Spec.IPIPMode != calicov3.IPIPModeNever
-			_, ipNet, err := net.ParseCIDR(node.Spec.BGP.IPv4Address)
-			if err != nil {
-				return errors.Wrapf(err, "error parsing node IPv4 network: %s", node.Spec.BGP.IPv4Address)
-			}
-			if pool.Spec.IPIPMode == calicov3.IPIPModeCrossSubnet && !isCrossSubnet(route.Gw, *ipNet) {
-				ipip = false
-			}
-			if ipip {
-				log.Fatalf("ipip not currently supported")
-				i, err := net.InterfaceByName("howtofindthis")
-				if err != nil {
-					return err
-				}
-				route.LinkIndex = i.Index
-				route.SetFlag(netlink.FLAG_ONLINK)
-			} else {
-				log.Debugf("listing paths")
-				err := s.bgpServer.ListPath(
-					context.Background(),
-					&bgpapi.ListPathRequest{
-						TableType: bgpapi.TableType_GLOBAL,
-						Name:      "",
-						Family:    &bgpFamilyUnicastIPv4,
-						Prefixes: []*bgpapi.TableLookupPrefix{
-							&bgpapi.TableLookupPrefix{
-								Prefix: route.Dst.String(),
-							},
-						},
-					},
-					func(destination *bgpapi.Destination) {
-						log.Debugf("Got destination for prefix %s: %+v", route.Dst.String(), destination)
-					},
-				)
-				if err != nil {
-					return errors.Wrap(err, "error listing paths")
-				}
-				// XXX TODO
-				// var best *bgpapi.Path = nil
-				// for _, p := range dest.Paths {
-				// 	if p.Best && (best == nil || p)
-				// }
-				// if len(bests) == 0 {
-				// 	log.Printf("no best for %s", prefix)
-				// 	continue
-				// }
-				// best := bests[0]
-				// if best.IsLocal() {
-				// 	log.Printf("%s's best is local path", prefix)
-				// 	continue
-				// }
-				// gw, err := recursiveNexthopLookup(best.GetNexthop())
-				// if err != nil {
-				// 	return err
-				// }
-				// route.Gw = gw
-				// route.Flags = 0
-				// rs, err := netlink.RouteGet(gw)
-				// if err != nil {
-				// 	return err
-				// }
-				// if len(rs) == 0 {
-				// 	return fmt.Errorf("no route for path: %s", gw)
-				// }
-				// r := rs[0]
-				// route.LinkIndex = r.LinkIndex
-			}
-			return netlink.RouteReplace(&route)
-		}
-	}
-	return nil
+	// TODO check if we need to change any routes based on VXLAN / IPIPMode config changes
+	return fmt.Errorf("IPPool updates not supported at this time")
 }
 
 // TODO: cache this? and watch for changes - reboot in case of changes
@@ -1198,12 +1092,6 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 		return fmt.Errorf("Cannot handle Nlri: %+v", path.Nlri)
 	}
 
-	route := &netlink.Route{
-		Dst:      &dst,
-		Gw:       nexthop,
-		Protocol: RTPROT_GOBGP,
-	}
-
 	ipip := false
 	if isV4 {
 		if p := s.ipam.match(dst); p != nil {
@@ -1218,35 +1106,22 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 				return errors.Wrapf(err, "error parsing node IPv4 network: %s", node.Spec.BGP.IPv4Address)
 			}
 
-			if p.Spec.IPIPMode == calicov3.IPIPModeCrossSubnet && !isCrossSubnet(route.Gw, *ipNet) {
+			if p.Spec.IPIPMode == calicov3.IPIPModeCrossSubnet && !isCrossSubnet(nexthop, *ipNet) {
 				ipip = false
 			}
 			if ipip {
 				log.Fatalf("ipip not supported at this time")
-				i, err := net.InterfaceByName("howtofindthis")
-				if err != nil {
-					return err
-				}
-				route.LinkIndex = i.Index
-				route.SetFlag(netlink.FLAG_ONLINK)
 			}
 		}
 		// TODO: if !IsWithdraw, we'd ignore that
 	}
 
 	if path.IsWithdraw {
-		log.Debugf("removed route %s from kernel", dst.String())
-		return errors.Wrap(netlink.RouteDel(route), "error deleting route")
+		log.Debugf("removing route %s from kernel", dst.String())
+		return errors.Wrap(s.vpp.delRoute(isV4, dst, nexthop), "error deleting route")
 	}
-	if !ipip {
-		gw, err := recursiveNexthopLookup(nexthop)
-		if err != nil {
-			return errors.Wrap(err, "next hop resolve failed")
-		}
-		route.Gw = gw
-	}
-	log.Printf("added route %s to kernel %+v", dst.String(), route)
-	return errors.Wrap(netlink.RouteReplace(route), "error replacing route")
+	log.Printf("adding route %s to kernel", dst.String())
+	return errors.Wrap(s.vpp.replaceRoute(isV4, dst, nexthop), "error replacing route")
 }
 
 // watchBGPPath watches BGP routes from other peers and inject them into
@@ -1518,6 +1393,7 @@ func main() {
 		log.Printf("failed to create new server")
 		log.Fatal(err)
 	}
+	defer server.vpp.close()
 
 	server.Serve()
 }
