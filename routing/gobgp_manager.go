@@ -14,10 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package routing
 
 import (
-	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -37,7 +36,7 @@ import (
 	calicoerr "github.com/projectcalico/libcalico-go/lib/errors"
 	"github.com/projectcalico/libcalico-go/lib/numorstring"
 	"github.com/projectcalico/libcalico-go/lib/options"
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/net/context"
 	"gopkg.in/tomb.v2"
@@ -65,28 +64,6 @@ type IpamCache interface {
 	sync() error
 }
 
-// VERSION is filled out during the build process (using git describe output)
-var VERSION string
-
-func cleanUpRoutes() error {
-	log.Println("Clean up injected routes")
-	filter := &netlink.Route{
-		Protocol: RTPROT_GOBGP,
-	}
-	list4, err := netlink.RouteListFiltered(netlink.FAMILY_V4, filter, netlink.RT_FILTER_PROTOCOL)
-	if err != nil {
-		return err
-	}
-	list6, err := netlink.RouteListFiltered(netlink.FAMILY_V6, filter, netlink.RT_FILTER_PROTOCOL)
-	if err != nil {
-		return err
-	}
-	for _, route := range append(list4, list6...) {
-		netlink.RouteDel(&route)
-	}
-	return nil
-}
-
 type Server struct {
 	t              tomb.Tomb
 	bgpServer      *bgpserver.BgpServer
@@ -102,9 +79,10 @@ type Server struct {
 	reloadCh       chan string
 	prefixReady    chan int
 	vpp            *vppInterface
+	l              *logrus.Entry
 }
 
-func NewServer() (*Server, error) {
+func NewServer(l *logrus.Entry) (*Server, error) {
 	nodeName := os.Getenv(NODENAME)
 	calicoCli, err := calicocli.NewFromEnv()
 	if err != nil {
@@ -132,7 +110,7 @@ func NewServer() (*Server, error) {
 		hasV6 = false
 	}
 
-	vpp, err := newVppInterface("", log.WithFields(log.Fields{"subcomponent": "vpp-api"}))
+	vpp, err := newVppInterface("", l.WithFields(logrus.Fields{"subcomponent": "vpp-api"}))
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating VPP client interface")
 	}
@@ -151,6 +129,7 @@ func NewServer() (*Server, error) {
 		reloadCh:    make(chan string),
 		prefixReady: make(chan int),
 		vpp:         vpp,
+		l:           l,
 	}
 
 	BGPConf, err := server.getDefaultBGPConfig()
@@ -172,20 +151,20 @@ func (s *Server) Serve() {
 
 	globalConfig, err := s.getGlobalConfig()
 	if err != nil {
-		log.Fatal("cannot get global configuration: ", err)
+		s.l.Fatal("cannot get global configuration: ", err)
 	}
 
 	if err := s.bgpServer.StartBgp(context.Background(), &bgpapi.StartBgpRequest{
 		Global: globalConfig,
 	}); err != nil {
-		log.Fatal("failed to start BGP server:", err)
+		s.l.Fatal("failed to start BGP server:", err)
 	}
 
 	if err := s.initialPolicySetting(); err != nil {
-		log.Fatal("error configuring initial policies: ", err)
+		s.l.Fatal("error configuring initial policies: ", err)
 	}
 
-	s.ipam = newIPAMCache(s.clientv3, s.ipamUpdateHandler)
+	s.ipam = newIPAMCache(s.l.WithFields(logrus.Fields{"subcomponent": "ipam-cache"}), s.clientv3, s.ipamUpdateHandler)
 	// sync IPAM and call ipamUpdateHandler
 	s.t.Go(func() error { return fmt.Errorf("syncIPAM: %s", s.ipam.sync()) })
 	// watch prefix assigned and announce to other BGP peers
@@ -207,10 +186,10 @@ func (s *Server) Serve() {
 
 	<-s.t.Dying()
 
-	if err := cleanUpRoutes(); err != nil {
-		log.Fatalf("%s, also failed to clean up routes which we injected: %s", s.t.Err(), err)
+	if err := s.cleanUpRoutes(); err != nil {
+		s.l.Fatalf("%s, also failed to clean up routes which we injected: %s", s.t.Err(), err)
 	}
-	log.Fatal(s.t.Err())
+	s.l.Fatal(s.t.Err())
 
 }
 
@@ -219,7 +198,7 @@ func isCrossSubnet(gw net.IP, subnet net.IPNet) bool {
 }
 
 func (s *Server) ipamUpdateHandler(pool *calicov3.IPPool) error {
-	log.Debugf("Pool %s updated, handler called", pool.Spec.CIDR)
+	s.l.Debugf("Pool %s updated, handler called", pool.Spec.CIDR)
 	// TODO check if we need to change any routes based on VXLAN / IPIPMode config changes
 	return fmt.Errorf("IPPool updates not supported at this time")
 }
@@ -243,7 +222,7 @@ func (s *Server) getDefaultBGPConfig() (*calicov3.BGPConfigurationSpec, error) {
 	}
 	switch err.(type) {
 	case calicoerr.ErrorResourceDoesNotExist:
-		log.Debug("No \"default\" BGP config found, using default options")
+		s.l.Debug("No \"default\" BGP config found, using default options")
 		ret := &calicov3.BGPConfigurationSpec{
 			LogSeverityScreen:     "INFO",
 			NodeToNodeMeshEnabled: &b,
@@ -365,7 +344,7 @@ func (s *Server) watchKernelRoute() error {
 		return err
 	}
 	for update := range ch {
-		log.Debugf("kernel update: %s", update)
+		s.l.Debugf("kernel update: %s", update)
 		if update.Table == syscall.RT_TABLE_MAIN &&
 			(update.Protocol == syscall.RTPROT_KERNEL || update.Protocol == syscall.RTPROT_BOOT) {
 			// TODO: handle ipPool deletion. RTM_DELROUTE message
@@ -379,14 +358,14 @@ func (s *Server) watchKernelRoute() error {
 				isWithdrawal = true
 			case syscall.RTM_NEWROUTE:
 			default:
-				log.Debugf("unhandled rtm type: %d", update.Type)
+				s.l.Debugf("unhandled rtm type: %d", update.Type)
 				continue
 			}
 			path, err := s.makePath(update.Dst.String(), isWithdrawal)
 			if err != nil {
 				return err
 			}
-			log.Debugf("made path from kernel update: %s", path)
+			s.l.Debugf("made path from kernel update: %s", path)
 			if _, err = s.bgpServer.AddPath(context.Background(), &bgpapi.AddPathRequest{
 				TableType: bgpapi.TableType_GLOBAL,
 				Path:      path,
@@ -429,7 +408,7 @@ func (s *Server) loadKernelRoute() error {
 			if err != nil {
 				return err
 			}
-			log.Printf("made path from kernel route: %s", path)
+			s.l.Tracef("made path from kernel route: %s", path)
 			if _, err = s.bgpServer.AddPath(context.Background(), &bgpapi.AddPathRequest{
 				TableType: bgpapi.TableType_GLOBAL,
 				Path:      path,
@@ -441,7 +420,7 @@ func (s *Server) loadKernelRoute() error {
 	return nil
 }
 
-func getNexthop(path *bgpapi.Path) string {
+func (s *Server) getNexthop(path *bgpapi.Path) string {
 	for _, attr := range path.Pattrs {
 		nhAttr := &bgpapi.NextHopAttribute{}
 		mpReachAttr := &bgpapi.MpReachNLRIAttribute{}
@@ -450,7 +429,7 @@ func getNexthop(path *bgpapi.Path) string {
 		}
 		if err := ptypes.UnmarshalAny(attr, mpReachAttr); err == nil {
 			if len(mpReachAttr.NextHops) != 1 {
-				log.Fatalf("Cannot process more than one Nlri in path attributes: %+v", mpReachAttr)
+				s.l.Fatalf("Cannot process more than one Nlri in path attributes: %+v", mpReachAttr)
 			}
 			return mpReachAttr.NextHops[0]
 		}
@@ -461,7 +440,7 @@ func getNexthop(path *bgpapi.Path) string {
 // injectRoute is a helper function to inject BGP routes to VPP
 // TODO: multipath support
 func (s *Server) injectRoute(path *bgpapi.Path) error {
-	nexthopAddr := getNexthop(path)
+	nexthopAddr := s.getNexthop(path)
 	nexthop := net.ParseIP(nexthopAddr)
 	if nexthop == nil {
 		return fmt.Errorf("Cannot determine path nexthop: %+v", path)
@@ -501,17 +480,17 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 				ipip = false
 			}
 			if ipip {
-				log.Fatalf("ipip not supported at this time")
+				s.l.Fatalf("ipip not supported at this time")
 			}
 		}
 		// TODO: if !IsWithdraw, we'd ignore that
 	}
 
 	if path.IsWithdraw {
-		log.Debugf("removing route %s from kernel", dst.String())
+		s.l.Debugf("removing route %s from kernel", dst.String())
 		return errors.Wrap(s.vpp.delRoute(isV4, dst, nexthop), "error deleting route")
 	}
-	log.Printf("adding route %s to kernel", dst.String())
+	s.l.Printf("adding route %s to kernel", dst.String())
 	return errors.Wrap(s.vpp.replaceRoute(isV4, dst, nexthop), "error replacing route")
 }
 
@@ -532,12 +511,12 @@ func (s *Server) watchBGPPath() error {
 			},
 			func(path *bgpapi.Path) {
 				if path == nil {
-					log.Warnf("nil path update, skipping")
+					s.l.Warnf("nil path update, skipping")
 					return
 				}
-				log.Infof("Got path update from %s as %u", path.SourceId, path.SourceAsn)
+				s.l.Infof("Got path update from %s as %u", path.SourceId, path.SourceAsn)
 				if path.NeighborIp == "<nil>" { // Weird GoBGP API behaviour
-					log.Debugf("Ignoring internal path")
+					s.l.Debugf("Ignoring internal path")
 					return
 				}
 				if err := s.injectRoute(path); err != nil {
@@ -664,7 +643,7 @@ func (s *Server) updatePrefixSet(paths []*bgpapi.Path) error {
 //      add "192.168.1.0/26..32" to 'host'       set
 //
 func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
-	log.Infof("Updating local prefix set with %+v", path)
+	s.l.Infof("Updating local prefix set with %+v", path)
 	ipAddrPrefixNlri := &bgpapi.IPAddressPrefix{}
 	var prefixAddr string = ""
 	var prefixLen uint32 = 0xffff
@@ -706,7 +685,7 @@ func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
 	// Add all contained prefixes to host prefix set, forbidding the export of containers /32s or /128s
 	max := uint32(32)
 	if strings.Contains(prefixAddr, ":") {
-		log.Debugf("Address %s detected as v6", prefixAddr)
+		s.l.Debugf("Address %s detected as v6", prefixAddr)
 		max = 128
 	}
 	ps = &bgpapi.DefinedSet{
@@ -751,40 +730,47 @@ func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
 	return errors.Wrapf(err, "error adding / deleting path %+v", path)
 }
 
-func main() {
-
-	// Display the version on "-v", otherwise just delegate to the skel code.
-	// Use a new flag set so as not to conflict with existing libraries which use "flag"
-	flagSet := flag.NewFlagSet("Calico", flag.ExitOnError)
-
-	version := flagSet.Bool("v", false, "Display version")
-	err := flagSet.Parse(os.Args[1:])
+func (s *Server) cleanUpRoutes() error {
+	s.l.Tracef("Clean up injected routes")
+	filter := &netlink.Route{
+		Protocol: RTPROT_GOBGP,
+	}
+	list4, err := netlink.RouteListFiltered(netlink.FAMILY_V4, filter, netlink.RT_FILTER_PROTOCOL)
 	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
+		return err
 	}
-	if *version {
-		fmt.Println(VERSION)
-		os.Exit(0)
-	}
-
-	rawloglevel := os.Getenv("CALICO_BGP_LOGSEVERITYSCREEN")
-	loglevel := log.InfoLevel
-	if rawloglevel != "" {
-		loglevel, err = log.ParseLevel(rawloglevel)
-		if err != nil {
-			log.WithError(err).Error("Failed to parse loglevel, defaulting to info.")
-			loglevel = log.InfoLevel
-		}
-	}
-	log.SetLevel(loglevel)
-
-	server, err := NewServer()
+	list6, err := netlink.RouteListFiltered(netlink.FAMILY_V6, filter, netlink.RT_FILTER_PROTOCOL)
 	if err != nil {
-		log.Printf("failed to create new server")
-		log.Fatal(err)
+		return err
+	}
+	for _, route := range append(list4, list6...) {
+		netlink.RouteDel(&route)
+	}
+	return nil
+}
+
+func Run(l *logrus.Entry) {
+	// rawloglevel := os.Getenv("CALICO_BGP_LOGSEVERITYSCREEN")
+	// if rawloglevel != "" {
+	// 	loglevel, err := logrus.ParseLevel(rawloglevel)
+	// 	if err != nil {
+	// 		l.WithError(err).Error("Failed to parse loglevel BGP loglevel")
+	// 	} else {
+	// 		l.Infof("Setting BGP log level to %s", rawloglevel)
+	// 		l.SetLevel(loglevel)
+	// 	}
+	// }
+
+	server, err := NewServer(l)
+	if err != nil {
+		l.Errorf("failed to create new server")
+		l.Fatal(err)
 	}
 	defer server.vpp.close()
 
 	server.Serve()
+}
+
+func GracefulStop() {
+	// TODO
 }

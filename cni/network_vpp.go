@@ -7,9 +7,9 @@ import (
 	"net"
 	"os"
 
-	"local.local/vpp-calico-dataplane/vpp-1908-api/interfaces"
-	vppip "local.local/vpp-calico-dataplane/vpp-1908-api/ip"
-	"local.local/vpp-calico-dataplane/vpp-1908-api/tapv2"
+	"github.com/vpp-calico/vpp-calico/vpp-1908-api/interfaces"
+	vppip "github.com/vpp-calico/vpp-calico/vpp-1908-api/ip"
+	"github.com/vpp-calico/vpp-calico/vpp-1908-api/tapv2"
 
 	govpp "git.fd.io/govpp.git"
 	vppapi "git.fd.io/govpp.git/api"
@@ -17,7 +17,7 @@ import (
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
-	pb "local.local/vpp-calico-dataplane/cni/proto"
+	pb "github.com/vpp-calico/vpp-calico/cni/proto"
 )
 
 var (

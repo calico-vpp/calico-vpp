@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package routing
 
 import (
 	"net"
@@ -25,7 +25,7 @@ import (
 	calicoerr "github.com/projectcalico/libcalico-go/lib/errors"
 	"github.com/projectcalico/libcalico-go/lib/options"
 	"github.com/projectcalico/libcalico-go/lib/watch"
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 )
 
@@ -58,6 +58,7 @@ type ipamCache struct {
 	updateHandler func(*calicov3.IPPool) error
 	ready         bool
 	readyCond     *sync.Cond
+	l             *logrus.Entry
 }
 
 // match checks whether we have an IP pool which contains the given prefix.
@@ -75,7 +76,7 @@ func (c *ipamCache) match(prefix net.IPNet) *calicov3.IPPool {
 	for _, p := range c.m {
 		in, err := contains(p, prefix)
 		if err != nil {
-			log.Warnf("contains errored: %v", err)
+			c.l.Warnf("contains errored: %v", err)
 			continue
 		}
 		if in {
@@ -91,7 +92,7 @@ func (c *ipamCache) match(prefix net.IPNet) *calicov3.IPPool {
 func (c *ipamCache) update(pool *calicov3.IPPool, del bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	log.Debugf("update ipam cache: %+v, %t", pool.Spec, del)
+	c.l.Debugf("update ipam cache: %+v, %t", pool.Spec, del)
 	key := pool.Spec.CIDR
 
 	existing := c.m[key]
@@ -113,7 +114,7 @@ func (c *ipamCache) update(pool *calicov3.IPPool, del bool) error {
 // sync synchronizes the IP pools stored under /calico/v1/ipam
 func (c *ipamCache) sync() error {
 	for {
-		log.Info("Reconciliating pools...")
+		c.l.Info("Reconciliating pools...")
 		poolsList, err := c.client.IPPools().List(context.Background(), options.ListOptions{})
 		if err != nil {
 			return errors.Wrap(err, "error listing pools")
@@ -172,12 +173,13 @@ func (c *ipamCache) sync() error {
 }
 
 // create new IPAM cache
-func newIPAMCache(client calicocliv3.Interface, updateHandler func(*calicov3.IPPool) error) *ipamCache {
+func newIPAMCache(l *logrus.Entry, client calicocliv3.Interface, updateHandler func(*calicov3.IPPool) error) *ipamCache {
 	cond := sync.NewCond(&sync.Mutex{})
 	return &ipamCache{
 		m:             make(map[string]*calicov3.IPPool),
 		updateHandler: updateHandler,
 		client:        client,
 		readyCond:     cond,
+		l:             l,
 	}
 }

@@ -6,7 +6,7 @@ import (
 	"syscall"
 
 	"github.com/sirupsen/logrus"
-	pb "local.local/vpp-calico-dataplane/cni/proto"
+	pb "github.com/vpp-calico/vpp-calico/cni/proto"
 
 	"google.golang.org/grpc"
 )

@@ -6,8 +6,8 @@ import (
 	"syscall"
 
 	"github.com/sirupsen/logrus"
-	"local.local/vpp-calico-dataplane/cni"
-	"local.local/vpp-calico-dataplane/routing"
+	"github.com/vpp-calico/vpp-calico/cni"
+	"github.com/vpp-calico/vpp-calico/routing"
 )
 
 func main() {
@@ -16,7 +16,7 @@ func main() {
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
 
 	go cni.Run(logger.WithFields(logrus.Fields{"component": "cni"}))
-	routing.Start(logger.WithFields(logrus.Fields{"component": "routing"}))
+	go routing.Run(logger.WithFields(logrus.Fields{"component": "routing"}))
 
 	<-signalChannel
 	logger.Infof("SIGINT received, exiting")

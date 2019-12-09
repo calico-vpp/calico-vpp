@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package routing
 
 import (
 	"context"
@@ -27,7 +27,6 @@ import (
 	"github.com/projectcalico/libcalico-go/lib/numorstring"
 	"github.com/projectcalico/libcalico-go/lib/options"
 	"github.com/projectcalico/libcalico-go/lib/watch"
-	log "github.com/sirupsen/logrus"
 )
 
 type node struct {
@@ -65,7 +64,7 @@ func (s *Server) watchNodes() error {
 
 	for {
 		// TODO: Get and watch only ourselves if there is no mesh
-		log.Info("Syncing nodes...")
+		s.l.Info("Syncing nodes...")
 		nodes, err := s.clientv3.Nodes().List(context.Background(), options.ListOptions{})
 		if err != nil {
 			return errors.Wrap(err, "error listing nodes")
@@ -80,7 +79,7 @@ func (s *Server) watchNodes() error {
 				return errors.Wrap(err, "error handling node update")
 			}
 			if shouldRestart {
-				log.Warnf("Current node configuration changed, restarting")
+				s.l.Warnf("Current node configuration changed, restarting")
 				return nil
 			}
 		}
@@ -91,7 +90,7 @@ func (s *Server) watchNodes() error {
 					return errors.Wrap(err, "error handling node update")
 				}
 				if shouldRestart {
-					log.Warnf("Current node configuration changed, restarting")
+					s.l.Warnf("Current node configuration changed, restarting")
 					return nil
 				}
 			}
@@ -127,7 +126,7 @@ func (s *Server) watchNodes() error {
 				return errors.Wrap(err, "error handling node update")
 			}
 			if shouldRestart {
-				log.Warnf("Current node configuration changed, restarting")
+				s.l.Warnf("Current node configuration changed, restarting")
 				return nil
 			}
 		}
@@ -144,7 +143,7 @@ func (s *Server) handleNodeUpdate(
 	eventType watch.EventType,
 	isMesh bool,
 ) (bool, error) {
-	log.Tracef("Got node update: mesh:%t %s %s %+v %v", isMesh, eventType, nodeName, newSpec, state)
+	s.l.Tracef("Got node update: mesh:%t %s %s %+v %v", isMesh, eventType, nodeName, newSpec, state)
 	if nodeName == s.nodeName {
 		// No need to manage ourselves, but if we change we need to restart and reconfigure
 		if eventType == watch.Deleted {
@@ -154,7 +153,7 @@ func (s *Server) handleNodeUpdate(
 			if found {
 				// Check that there were no changes, restart if our BGP config changed
 				old.SweepFlag = false
-				log.Tracef("node comparison: old:%+v new:%+v", old.Spec.BGP, newSpec.BGP)
+				s.l.Tracef("node comparison: old:%+v new:%+v", old.Spec.BGP, newSpec.BGP)
 				return !reflect.DeepEqual(old.Spec.BGP, newSpec.BGP), nil
 			} else {
 				// First pass, create local node
@@ -200,7 +199,7 @@ func (s *Server) handleNodeUpdate(
 	case watch.Added, watch.Modified:
 		old, found := state[nodeName]
 		if found {
-			log.Tracef("node comparison: old:%+v new:%+v", old.Spec.BGP, newSpec.BGP)
+			s.l.Tracef("node comparison: old:%+v new:%+v", old.Spec.BGP, newSpec.BGP)
 			var oldASN uint32
 			if old.Spec.BGP.ASNumber != nil {
 				oldASN = uint32(*old.Spec.BGP.ASNumber)

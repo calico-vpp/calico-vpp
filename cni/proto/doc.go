@@ -7,3 +7,5 @@ package proto
 // CNI plugin with a custom dataplane, much like felix's dtaplane
 // abstraction allows to use Calico's policy engine with a non-kernel
 // dataplane
+
+// Use go-generate to regenerate the go file.

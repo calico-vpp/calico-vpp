@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package routing
 
 import (
 	"fmt"
@@ -23,7 +23,7 @@ import (
 	govpp "git.fd.io/govpp.git"
 	vppapi "git.fd.io/govpp.git/api"
 	vppcore "git.fd.io/govpp.git/core"
-	vppip "local.local/vpp-calico-dataplane/vpp-1908-api/ip"
+	vppip "github.com/vpp-calico/vpp-calico/vpp-1908-api/ip"
 
 	"github.com/sirupsen/logrus"
 )

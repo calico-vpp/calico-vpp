@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package routing
 
 import (
 	"net"
@@ -24,7 +24,6 @@ import (
 	calicoerr "github.com/projectcalico/libcalico-go/lib/errors"
 	"github.com/projectcalico/libcalico-go/lib/options"
 	"github.com/projectcalico/libcalico-go/lib/watch"
-	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 )
 
@@ -44,7 +43,7 @@ func (s *Server) watchBGPPeers() error {
 	state := make(map[string]*bgpPeer)
 
 	for {
-		log.Debugf("Reconciliating peers...")
+		s.l.Debugf("Reconciliating peers...")
 		peers, err := s.clientv3.BGPPeers().List(context.Background(), options.ListOptions{})
 		if err != nil {
 			return err
@@ -139,7 +138,7 @@ func (s *Server) watchBGPPeers() error {
 				ip := peer.Spec.PeerIP
 				_, ok := state[ip]
 				if !ok {
-					log.Warnf("Deleted peer %s not found", ip)
+					s.l.Warnf("Deleted peer %s not found", ip)
 					continue
 				}
 				err := s.deleteBGPPeer(ip)
@@ -204,7 +203,7 @@ func (s *Server) addBGPPeer(ip string, asn uint32) error {
 	if err != nil {
 		return err
 	}
-	log.Infof("Adding BGP neighbor: %+v", peer)
+	s.l.Infof("Adding BGP neighbor: %+v", peer)
 	err = s.bgpServer.AddPeer(context.Background(), &bgpapi.AddPeerRequest{Peer: peer})
 	return err
 }
@@ -214,13 +213,13 @@ func (s *Server) updateBGPPeer(ip string, asn uint32) error {
 	if err != nil {
 		return err
 	}
-	log.Infof("Updating BGP neighbor: %+v", peer)
+	s.l.Infof("Updating BGP neighbor: %+v", peer)
 	_, err = s.bgpServer.UpdatePeer(context.Background(), &bgpapi.UpdatePeerRequest{Peer: peer})
 	return err
 }
 
 func (s *Server) deleteBGPPeer(ip string) error {
-	log.Infof("Adding BGP neighbor: %s", ip)
+	s.l.Infof("Adding BGP neighbor: %s", ip)
 	err := s.bgpServer.DeletePeer(context.Background(), &bgpapi.DeletePeerRequest{Address: ip})
 	return err
 }

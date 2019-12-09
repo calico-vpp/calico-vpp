@@ -1,4 +1,4 @@
-module local.local/vpp-calico-dataplane
+module github.com/vpp-calico/vpp-calico
 
 go 1.12
 
