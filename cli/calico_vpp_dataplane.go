@@ -12,6 +12,7 @@ import (
 
 func main() {
 	logger := logrus.New()
+	logger.SetLevel(logrus.DebugLevel)
 	signalChannel := make(chan os.Signal, 2)
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
 

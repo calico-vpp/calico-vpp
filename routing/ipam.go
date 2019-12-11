@@ -55,7 +55,7 @@ type ipamCache struct {
 	mu            sync.RWMutex
 	m             map[string]*calicov3.IPPool
 	client        calicocliv3.Interface
-	updateHandler func(*calicov3.IPPool) error
+	updateHandler func(*calicov3.IPPool, *calicov3.IPPool) error
 	ready         bool
 	readyCond     *sync.Cond
 	l             *logrus.Entry
@@ -106,7 +106,7 @@ func (c *ipamCache) update(pool *calicov3.IPPool, del bool) error {
 	c.m[key] = pool
 
 	if c.updateHandler != nil {
-		return c.updateHandler(pool)
+		return c.updateHandler(pool, existing)
 	}
 	return nil
 }
@@ -173,7 +173,7 @@ func (c *ipamCache) sync() error {
 }
 
 // create new IPAM cache
-func newIPAMCache(l *logrus.Entry, client calicocliv3.Interface, updateHandler func(*calicov3.IPPool) error) *ipamCache {
+func newIPAMCache(l *logrus.Entry, client calicocliv3.Interface, updateHandler func(*calicov3.IPPool, *calicov3.IPPool) error) *ipamCache {
 	cond := sync.NewCond(&sync.Mutex{})
 	return &ipamCache{
 		m:             make(map[string]*calicov3.IPPool),

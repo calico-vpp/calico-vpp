@@ -110,7 +110,7 @@ func NewServer(l *logrus.Entry) (*Server, error) {
 		hasV6 = false
 	}
 
-	vpp, err := newVppInterface("", l.WithFields(logrus.Fields{"subcomponent": "vpp-api"}))
+	vpp, err := newVppInterface("/var/run/vpp/vpp-api.sock", l.WithFields(logrus.Fields{"subcomponent": "vpp-api"}))
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating VPP client interface")
 	}
@@ -197,10 +197,13 @@ func isCrossSubnet(gw net.IP, subnet net.IPNet) bool {
 	return !subnet.Contains(gw)
 }
 
-func (s *Server) ipamUpdateHandler(pool *calicov3.IPPool) error {
+func (s *Server) ipamUpdateHandler(pool *calicov3.IPPool, prevPool *calicov3.IPPool) error {
 	s.l.Debugf("Pool %s updated, handler called", pool.Spec.CIDR)
 	// TODO check if we need to change any routes based on VXLAN / IPIPMode config changes
-	return fmt.Errorf("IPPool updates not supported at this time")
+	if prevPool != nil {
+		return fmt.Errorf("IPPool updates not supported at this time: old: %+v new: %+v", prevPool, pool)
+	}
+	return nil
 }
 
 func (s *Server) getDefaultBGPConfig() (*calicov3.BGPConfigurationSpec, error) {
@@ -487,10 +490,10 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 	}
 
 	if path.IsWithdraw {
-		s.l.Debugf("removing route %s from kernel", dst.String())
+		s.l.Debugf("removing route %s from VPP", dst.String())
 		return errors.Wrap(s.vpp.delRoute(isV4, dst, nexthop), "error deleting route")
 	}
-	s.l.Printf("adding route %s to kernel", dst.String())
+	s.l.Printf("adding route %s to VPP", dst.String())
 	return errors.Wrap(s.vpp.replaceRoute(isV4, dst, nexthop), "error replacing route")
 }
 
@@ -514,7 +517,7 @@ func (s *Server) watchBGPPath() error {
 					s.l.Warnf("nil path update, skipping")
 					return
 				}
-				s.l.Infof("Got path update from %s as %u", path.SourceId, path.SourceAsn)
+				s.l.Infof("Got path update from %s as %d", path.SourceId, path.SourceAsn)
 				if path.NeighborIp == "<nil>" { // Weird GoBGP API behaviour
 					s.l.Debugf("Ignoring internal path")
 					return

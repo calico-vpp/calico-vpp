@@ -15,7 +15,7 @@ type server struct {
 }
 
 const (
-	serverSocket = "/tmp/cni-server.sock"
+	serverSocket = "/var/run/calico/cni-server.sock"
 	vppSocket    = ""
 )
 
