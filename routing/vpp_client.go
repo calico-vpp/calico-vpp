@@ -54,7 +54,7 @@ func (v *vppInterface) doRoute(v4 bool, dst net.IPNet, gw net.IP, isAdd uint8) e
 		TableID: 0,
 		Paths: []vppip.FibPath{
 			{
-				SwIfIndex:  0, // Is this correct?????
+				SwIfIndex:  0xffffffff, // Is this correct?????
 				TableID:    0,
 				RpfID:      0,
 				Weight:     1,
@@ -100,7 +100,7 @@ func (v *vppInterface) doRoute(v4 bool, dst net.IPNet, gw net.IP, isAdd uint8) e
 
 	response := &vppip.IPRouteAddDelReply{}
 
-	v.log.Tracef("Route add object: %+v", route)
+	v.log.Infof("Route add object: %+v", route)
 
 	err := v.ch.SendRequest(request).ReceiveReply(response)
 	if err != nil || response.Retval != 0 {
