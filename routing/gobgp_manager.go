@@ -60,7 +60,7 @@ var (
 
 type IpamCache interface {
 	match(net.IPNet) *calicov3.IPPool
-	update(*calicov3.IPPool, bool) error
+	update(calicov3.IPPool, bool) error
 	sync() error
 }
 

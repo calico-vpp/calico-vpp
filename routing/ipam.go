@@ -89,7 +89,7 @@ func (c *ipamCache) match(prefix net.IPNet) *calicov3.IPPool {
 // update updates the internal map with IPAM updates when the update
 // is new addtion to the map or changes the existing item, it calls
 // updateHandler
-func (c *ipamCache) update(pool *calicov3.IPPool, del bool) error {
+func (c *ipamCache) update(pool calicov3.IPPool, del bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.l.Debugf("update ipam cache: %+v, %t", pool.Spec, del)
@@ -99,14 +99,14 @@ func (c *ipamCache) update(pool *calicov3.IPPool, del bool) error {
 	if del {
 		delete(c.m, key) // Should we cal updateHandler here (and modify it to handle deletions)?
 		return nil
-	} else if existing != nil && equalPools(pool, existing) {
+	} else if existing != nil && equalPools(&pool, existing) {
 		return nil
 	}
 
-	c.m[key] = pool
+	c.m[key] = &pool
 
 	if c.updateHandler != nil {
-		return c.updateHandler(pool, existing)
+		return c.updateHandler(&pool, existing)
 	}
 	return nil
 }
@@ -122,7 +122,7 @@ func (c *ipamCache) sync() error {
 		sweepMap := make(map[string]bool)
 		for _, pool := range poolsList.Items {
 			sweepMap[pool.Spec.CIDR] = true
-			err := c.update(&pool, false)
+			err := c.update(pool, false)
 			if err != nil {
 				return errors.Wrap(err, "error processing startup pool update")
 			}
@@ -131,7 +131,7 @@ func (c *ipamCache) sync() error {
 		for key, pool := range c.m {
 			found := sweepMap[key]
 			if !found {
-				c.update(pool, true)
+				c.update(*pool, true)
 			}
 		}
 
@@ -164,7 +164,7 @@ func (c *ipamCache) sync() error {
 				pool = update.Previous
 			case watch.Added, watch.Modified:
 			}
-			if err = c.update(pool.(*calicov3.IPPool), del); err != nil {
+			if err = c.update(*pool.(*calicov3.IPPool), del); err != nil {
 				return errors.Wrap(err, "error processing pool update")
 			}
 		}
