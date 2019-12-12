@@ -753,16 +753,17 @@ func (s *Server) cleanUpRoutes() error {
 }
 
 func Run(l *logrus.Entry) {
-	// rawloglevel := os.Getenv("CALICO_BGP_LOGSEVERITYSCREEN")
-	// if rawloglevel != "" {
-	// 	loglevel, err := logrus.ParseLevel(rawloglevel)
-	// 	if err != nil {
-	// 		l.WithError(err).Error("Failed to parse loglevel BGP loglevel")
-	// 	} else {
-	// 		l.Infof("Setting BGP log level to %s", rawloglevel)
-	// 		l.SetLevel(loglevel)
-	// 	}
-	// }
+	rawloglevel := os.Getenv("CALICO_BGP_LOGSEVERITYSCREEN")
+	if rawloglevel != "" {
+		loglevel, err := logrus.ParseLevel(rawloglevel)
+		if err != nil {
+			l.WithError(err).Error("Failed to parse BGP loglevel: %s, defaulting to info", rawloglevel)
+		} else {
+			l.Infof("Setting BGP log level to %s", rawloglevel)
+			logrus.SetLevel(loglevel) // This sets the log level for the GoBGP server
+			// This is separate from the level used by the logger in this package
+		}
+	}
 
 	server, err := NewServer(l)
 	if err != nil {
