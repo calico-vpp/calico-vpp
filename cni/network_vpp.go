@@ -99,7 +99,7 @@ func createVppTap(
 		HostMacAddr:      containerSideMacAddress[:],
 		HostMacAddrSet:   1,
 	}
-	logger.Errorf("Tap creation request: %+v", request)
+	logger.Debugf("Tap creation request: %+v", request)
 
 	err = ch.SendRequest(request).ReceiveReply(response)
 	if err != nil {
@@ -195,7 +195,7 @@ func addVppInterface(
 	var hasIPv4, hasIPv6 bool
 
 	if args.GetDesiredHostInterfaceName() != "" {
-		logger.Errorf("desired host side interface name passed, this is not supported with VPP, ignoring it")
+		logger.Warn("desired host side interface name passed, this is not supported with VPP, ignoring it")
 	}
 
 	logger.Infof("setting tap tag to %s", tapTag)
