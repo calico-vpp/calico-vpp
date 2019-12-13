@@ -39,6 +39,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 	"gopkg.in/tomb.v2"
 
 	"github.com/vpp-calico/vpp-calico/vpp_client"
@@ -58,6 +59,7 @@ const (
 var (
 	bgpFamilyUnicastIPv4 = bgpapi.Family{Afi: bgpapi.Family_AFI_IP, Safi: bgpapi.Family_SAFI_UNICAST}
 	bgpFamilyUnicastIPv6 = bgpapi.Family{Afi: bgpapi.Family_AFI_IP6, Safi: bgpapi.Family_SAFI_UNICAST}
+	server               *Server
 )
 
 type IpamCache interface {
@@ -112,7 +114,9 @@ func NewServer(vpp *vpp_client.VppInterface, l *logrus.Entry) (*Server, error) {
 		hasV6 = false
 	}
 
-	bgpServer := bgpserver.NewBgpServer()
+	maxSize := 256 << 20
+	grpcOpts := []grpc.ServerOption{grpc.MaxRecvMsgSize(maxSize), grpc.MaxSendMsgSize(maxSize)}
+	bgpServer := bgpserver.NewBgpServer(bgpserver.GrpcListenAddress("localhost:50051"), bgpserver.GrpcOption(grpcOpts))
 
 	server := Server{
 		bgpServer:   bgpServer,
@@ -749,6 +753,42 @@ func (s *Server) cleanUpRoutes() error {
 	return nil
 }
 
+func (s *Server) announceLocalAddress(addr net.IPNet) error {
+	s.l.Debugf("Announcing prefix %s in BGP", addr.String())
+	path, err := s.makePath(addr.String(), false)
+	if err != nil {
+		return errors.Wrap(err, "error making path to announce")
+	}
+	_, err = s.bgpServer.AddPath(context.Background(), &bgpapi.AddPathRequest{
+		TableType: bgpapi.TableType_GLOBAL,
+		Path:      path,
+	})
+	return errors.Wrap(err, "error announcing local address")
+}
+
+func (s *Server) withdrawLocalAddress(addr net.IPNet) error {
+	s.l.Debugf("Withdrawing prefix %s from BGP", addr.String())
+	path, err := s.makePath(addr.String(), true)
+	if err != nil {
+		return errors.Wrap(err, "error making path to withdraw")
+	}
+	_, err = s.bgpServer.AddPath(context.Background(), &bgpapi.AddPathRequest{
+		TableType: bgpapi.TableType_GLOBAL,
+		Path:      path,
+	})
+	return errors.Wrap(err, "error withdrawing local address")
+}
+
+func AnnounceLocalAddress(addr net.IPNet) error {
+	// TODO proper sync to wait for server to be ready
+	return server.announceLocalAddress(addr)
+}
+
+func WithdrawLocalAddress(addr net.IPNet) error {
+	// TODO proper sync to wait for server to be ready
+	return server.withdrawLocalAddress(addr)
+}
+
 func Run(vpp *vpp_client.VppInterface, l *logrus.Entry) {
 	rawloglevel := os.Getenv("CALICO_BGP_LOGSEVERITYSCREEN")
 	if rawloglevel != "" {
@@ -762,12 +802,12 @@ func Run(vpp *vpp_client.VppInterface, l *logrus.Entry) {
 		}
 	}
 
-	server, err := NewServer(vpp, l)
+	s, err := NewServer(vpp, l)
 	if err != nil {
 		l.Errorf("failed to create new server")
 		l.Fatal(err)
 	}
-
+	server = s
 	server.Serve()
 }
 

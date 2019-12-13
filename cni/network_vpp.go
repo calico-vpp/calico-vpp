@@ -18,6 +18,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	pb "github.com/vpp-calico/vpp-calico/cni/proto"
+	"github.com/vpp-calico/vpp-calico/routing"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -217,12 +219,9 @@ func addVppInterface(
 			return err
 		}
 
-		// Fetch the MAC from the container Veth. This is needed by Calico.
+		// Fetch the MAC from the container tap. This is needed by Calico.
 		contTapMac = contTap.Attrs().HardwareAddr.String()
-		logger.WithField("MAC", contTapMac).Debug("Found MAC for container veth")
-
-		// At this point, the virtual ethernet pair has been created, and both ends have the right names.
-		// Both ends of the veth are still in the container's network namespace.
+		logger.WithField("MAC", contTapMac).Debug("Found MAC for container tap")
 
 		// Do the per-IP version set-up.  Add gateway routes etc.
 		if hasIPv4 {
@@ -339,15 +338,20 @@ func addVppInterface(
 		// Now add the IPs to the container side of the tap.
 		for _, addr := range args.GetContainerIps() {
 			maskLen := 32
-			if !addr.GetIp().GetIp().GetIsIpv6() {
+			if addr.GetIp().GetIp().GetIsIpv6() {
 				maskLen = 128
 			}
-			err = netlink.AddrAdd(contTap, &netlink.Addr{IPNet: &net.IPNet{
+			addr := &net.IPNet{
 				IP:   addr.GetIp().GetIp().GetIp(),
 				Mask: net.CIDRMask(int(addr.GetIp().GetPrefixLen()), maskLen),
-			}})
+			}
+			err = netlink.AddrAdd(contTap, &netlink.Addr{IPNet: addr})
 			if err != nil {
 				return fmt.Errorf("failed to add IP addr to %q: %v", contTap, err)
+			}
+			err = routing.AnnounceLocalAddress(*addr)
+			if err != nil {
+				return errors.Wrap(err, "failed to announce address")
 			}
 		}
 
@@ -474,12 +478,36 @@ func delVppInterface(logger *logrus.Entry, args *pb.DelRequest) error {
 	}
 
 	devErr := ns.WithNetNSPath(netns, func(_ ns.NetNS) error {
-		_, err := netlink.LinkByName(contIfName)
-		return err
+		dev, err := netlink.LinkByName(contIfName)
+		if err != nil {
+			return err
+		}
+		addresses, err := netlink.AddrList(dev, netlink.FAMILY_ALL)
+		if err != nil {
+			return err
+		}
+		for _, addr := range addresses {
+			logger.Debugf("Found address %s on interface, scope %d", addr.IP.String(), addr.Scope)
+			if addr.Scope == unix.RT_SCOPE_LINK {
+				continue
+			}
+			err = routing.WithdrawLocalAddress(net.IPNet{IP: addr.IP, Mask: addr.Mask})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if devErr != nil {
-		logger.Infof("Device to delete not found")
-		return nil
+		switch devErr.(type) {
+		case netlink.LinkNotFoundError:
+			logger.Infof("Device to delete not found")
+			return nil
+		default:
+			logger.Warnf("error withdrawing interface addresses: %v", devErr)
+			return errors.Wrap(devErr, "error withdrawing interface addresses")
+		}
+
 	}
 
 	ch, err := vpp.GetChannel()
@@ -514,7 +542,7 @@ func delVppInterface(logger *logrus.Entry, args *pb.DelRequest) error {
 		}
 	}
 
-	logger.Infof("found VPP tap interface: %+v", intf)
+	logger.Infof("found matching VPP tap interface: %+v", intf)
 
 	// Set interface down
 	AdminDownRequest := &interfaces.SwInterfaceSetFlags{

@@ -25,6 +25,7 @@ require (
 	github.com/spf13/viper v1.5.0 // indirect
 	github.com/vishvananda/netlink v1.0.0
 	golang.org/x/net v0.0.0-20191004110552-13f9640d40b9
+	golang.org/x/sys v0.0.0-20190826190057-c7b8b68b1456
 	golang.org/x/time v0.0.0-20191024005414-555d28b269f0 // indirect
 	google.golang.org/grpc v1.24.0
 	gopkg.in/go-playground/validator.v8 v8.18.2 // indirect
