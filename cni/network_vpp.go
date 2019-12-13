@@ -11,10 +11,10 @@ import (
 	vppip "github.com/vpp-calico/vpp-calico/vpp-1908-api/ip"
 	"github.com/vpp-calico/vpp-calico/vpp-1908-api/tapv2"
 
-	govpp "git.fd.io/govpp.git"
 	vppapi "git.fd.io/govpp.git/api"
 	"github.com/containernetworking/plugins/pkg/ip"
 	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	pb "github.com/vpp-calico/vpp-calico/cni/proto"
@@ -166,27 +166,10 @@ func createVppTap(
 
 // DoVppNetworking performs the networking for the given config and IPAM result
 func addVppInterface(
-	vppSocket string,
 	logger *logrus.Entry,
 	args *pb.AddRequest,
 ) (ifName, contTapMac string, err error) {
 	logger.Infof("creating container interface using VPP networking")
-
-	// Connect to VPP
-	conn, err := govpp.Connect(vppSocket)
-	if err != nil {
-		logger.Errorf("cannot connect to VPP")
-		return "", "", fmt.Errorf("cannot connect to VPP")
-	}
-	defer conn.Disconnect()
-
-	// Open channel
-	ch, err := conn.NewAPIChannel()
-	if err != nil {
-		logger.Errorf("channel creation failed")
-		return "", "", fmt.Errorf("channel creation failed")
-	}
-	defer ch.Close()
 
 	// Select the first 11 characters of the containerID for the host veth.
 	contTapName := args.GetInterfaceName()
@@ -209,12 +192,18 @@ func addVppInterface(
 		}
 	}
 
+	ch, err := vpp.GetChannel()
+	if err != nil {
+		return "", "", errors.Wrap(err, "error opening VPP API channel")
+	}
+	defer ch.Close()
+
 	// TODO: Clean up old tap if one is found with this tag
 
 	swIfIndex, vppIPAddr, err := createVppTap(logger, ch, netns, contTapName, tapTag, hasIPv6)
 	logger.Infof("Created tap with sw_if_index %d err %v", swIfIndex, err)
 	if err != nil {
-		delVppInterface(vppSocket, logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
+		delVppInterface(logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
 			InterfaceName: contTapName,
 			Netns:         netns,
 		})
@@ -371,7 +360,7 @@ func addVppInterface(
 
 	if err != nil {
 		logger.Errorf("Error creating or configuring tap: %s", err)
-		delVppInterface(vppSocket, logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
+		delVppInterface(logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
 			InterfaceName: contTapName,
 			Netns:         netns,
 		})
@@ -381,13 +370,14 @@ func addVppInterface(
 	// Now that the host side of the veth is moved, state set to UP, and configured with sysctls, we can add the routes to it in the host namespace.
 	err = SetupVppRoutes(ch, swIfIndex, args.GetContainerIps(), logger)
 	if err != nil {
-		delVppInterface(vppSocket, logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
+		delVppInterface(logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
 			InterfaceName: contTapName,
 			Netns:         netns,
 		})
 		return "", "", fmt.Errorf("error adding vpp side routes for interface: %s, error: %s", tapTag, err)
 	}
 
+	logger.Infof("tap setup complete")
 	return swIfIdxToIfName(swIfIndex), contTapMac, err
 }
 
@@ -472,7 +462,7 @@ func SetupVppRoutes(ch vppapi.Channel, swIfIndex uint32, config []*pb.IPConfig, 
 }
 
 // CleanUpVPPNamespace deletes the devices in the network namespace.
-func delVppInterface(vppSocket string, logger *logrus.Entry, args *pb.DelRequest) error {
+func delVppInterface(logger *logrus.Entry, args *pb.DelRequest) error {
 	contIfName := args.GetInterfaceName()
 	netns := args.GetNetns()
 	logger.Infof("deleting container interface using VPP networking, netns: %s, interface: %s", netns, contIfName)
@@ -492,19 +482,9 @@ func delVppInterface(vppSocket string, logger *logrus.Entry, args *pb.DelRequest
 		return nil
 	}
 
-	// Connect to VPP
-	conn, err := govpp.Connect(vppSocket)
+	ch, err := vpp.GetChannel()
 	if err != nil {
-		logger.Errorf("cannot connect to VPP")
-		return fmt.Errorf("cannot connect to VPP")
-	}
-	defer conn.Disconnect()
-
-	// Open channel
-	ch, err := conn.NewAPIChannel()
-	if err != nil {
-		logger.Errorf("channel creation failed")
-		return fmt.Errorf("channel creation failed")
+		return errors.Wrap(err, "error opening VPP API channel")
 	}
 	defer ch.Close()
 
@@ -649,7 +629,7 @@ func delVppInterface(vppSocket string, logger *logrus.Entry, args *pb.DelRequest
 		return err
 	}
 
-	logger.Infof("deleted tap %d", intf.SwIfIndex)
+	logger.Infof("tap %d deletion complete", intf.SwIfIndex)
 
 	return nil
 }

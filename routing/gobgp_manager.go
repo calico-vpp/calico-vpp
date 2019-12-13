@@ -40,6 +40,8 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/net/context"
 	"gopkg.in/tomb.v2"
+
+	"github.com/vpp-calico/vpp-calico/vpp_client"
 )
 
 const (
@@ -78,11 +80,11 @@ type Server struct {
 	ipam           IpamCache
 	reloadCh       chan string
 	prefixReady    chan int
-	vpp            *vppInterface
+	vpp            *vpp_client.VppInterface
 	l              *logrus.Entry
 }
 
-func NewServer(l *logrus.Entry) (*Server, error) {
+func NewServer(vpp *vpp_client.VppInterface, l *logrus.Entry) (*Server, error) {
 	nodeName := os.Getenv(NODENAME)
 	calicoCli, err := calicocli.NewFromEnv()
 	if err != nil {
@@ -108,11 +110,6 @@ func NewServer(l *logrus.Entry) (*Server, error) {
 	}
 	if ipv6, _, err = net.ParseCIDR(node.Spec.BGP.IPv6Address); err != nil {
 		hasV6 = false
-	}
-
-	vpp, err := newVppInterface("/var/run/vpp/vpp-api.sock", l.WithFields(logrus.Fields{"subcomponent": "vpp-api"}))
-	if err != nil {
-		return nil, errors.Wrap(err, "error creating VPP client interface")
 	}
 
 	bgpServer := bgpserver.NewBgpServer()
@@ -491,10 +488,10 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 
 	if path.IsWithdraw {
 		s.l.Debugf("removing route %s from VPP", dst.String())
-		return errors.Wrap(s.vpp.delRoute(isV4, dst, nexthop), "error deleting route")
+		return errors.Wrap(s.vpp.DelRoute(isV4, dst, nexthop), "error deleting route")
 	}
 	s.l.Printf("adding route %s to VPP", dst.String())
-	return errors.Wrap(s.vpp.replaceRoute(isV4, dst, nexthop), "error replacing route")
+	return errors.Wrap(s.vpp.ReplaceRoute(isV4, dst, nexthop), "error replacing route")
 }
 
 // watchBGPPath watches BGP routes from other peers and inject them into
@@ -752,7 +749,7 @@ func (s *Server) cleanUpRoutes() error {
 	return nil
 }
 
-func Run(l *logrus.Entry) {
+func Run(vpp *vpp_client.VppInterface, l *logrus.Entry) {
 	rawloglevel := os.Getenv("CALICO_BGP_LOGSEVERITYSCREEN")
 	if rawloglevel != "" {
 		loglevel, err := logrus.ParseLevel(rawloglevel)
@@ -765,12 +762,11 @@ func Run(l *logrus.Entry) {
 		}
 	}
 
-	server, err := NewServer(l)
+	server, err := NewServer(vpp, l)
 	if err != nil {
 		l.Errorf("failed to create new server")
 		l.Fatal(err)
 	}
-	defer server.vpp.close()
 
 	server.Serve()
 }

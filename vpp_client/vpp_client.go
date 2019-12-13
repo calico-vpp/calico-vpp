@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package routing
+package vpp_client
 
 import (
 	"fmt"
@@ -28,7 +28,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type vppInterface struct {
+type VppInterface struct {
 	lock   sync.Mutex
 	conn   *vppcore.Connection
 	ch     vppapi.Channel
@@ -36,15 +36,15 @@ type vppInterface struct {
 	log    *logrus.Entry
 }
 
-func (v *vppInterface) replaceRoute(v4 bool, dst net.IPNet, gw net.IP) error {
+func (v *VppInterface) ReplaceRoute(v4 bool, dst net.IPNet, gw net.IP) error {
 	return v.doRoute(v4, dst, gw, 1)
 }
 
-func (v *vppInterface) delRoute(v4 bool, dst net.IPNet, gw net.IP) error {
+func (v *VppInterface) DelRoute(v4 bool, dst net.IPNet, gw net.IP) error {
 	return v.doRoute(v4, dst, gw, 0)
 }
 
-func (v *vppInterface) doRoute(v4 bool, dst net.IPNet, gw net.IP, isAdd uint8) error {
+func (v *VppInterface) doRoute(v4 bool, dst net.IPNet, gw net.IP, isAdd uint8) error {
 	v.lock.Lock()
 	defer v.lock.Unlock()
 
@@ -100,7 +100,7 @@ func (v *vppInterface) doRoute(v4 bool, dst net.IPNet, gw net.IP, isAdd uint8) e
 
 	response := &vppip.IPRouteAddDelReply{}
 
-	v.log.Infof("Route add object: %+v", route)
+	v.log.Debugf("Route add object: %+v", route)
 
 	err := v.ch.SendRequest(request).ReceiveReply(response)
 	if err != nil || response.Retval != 0 {
@@ -109,7 +109,11 @@ func (v *vppInterface) doRoute(v4 bool, dst net.IPNet, gw net.IP, isAdd uint8) e
 	return nil
 }
 
-func newVppInterface(socket string, logger *logrus.Entry) (*vppInterface, error) {
+func (v *VppInterface) GetChannel() (vppapi.Channel, error) {
+	return v.conn.NewAPIChannel()
+}
+
+func NewVppInterface(socket string, logger *logrus.Entry) (*VppInterface, error) {
 	conn, err := govpp.Connect(socket)
 	if err != nil {
 		logger.Errorf("cannot connect to VPP on socket %s", socket)
@@ -123,7 +127,7 @@ func newVppInterface(socket string, logger *logrus.Entry) (*vppInterface, error)
 		return nil, fmt.Errorf("channel creation failed")
 	}
 
-	return &vppInterface{
+	return &VppInterface{
 		conn:   conn,
 		ch:     ch,
 		socket: socket,
@@ -131,7 +135,7 @@ func newVppInterface(socket string, logger *logrus.Entry) (*vppInterface, error)
 	}, nil
 }
 
-func (v *vppInterface) close() {
+func (v *VppInterface) Close() {
 	if v.ch != nil {
 		v.ch.Close()
 	}
