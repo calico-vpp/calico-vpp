@@ -19,6 +19,7 @@ import (
 	"github.com/vishvananda/netlink"
 	pb "github.com/vpp-calico/vpp-calico/cni/proto"
 	"github.com/vpp-calico/vpp-calico/routing"
+	"github.com/vpp-calico/vpp-calico/services"
 	"golang.org/x/sys/unix"
 )
 
@@ -353,6 +354,10 @@ func addVppInterface(
 			if err != nil {
 				return errors.Wrap(err, "failed to announce address")
 			}
+			err = services.AnnounceLocalAddress(addr.IP, swIfIndex)
+			if err != nil {
+				return errors.Wrap(err, "failed to announce address to services")
+			}
 		}
 
 		if err = configureContainerSysctls(logger, args.GetSettings().GetAllowIpForwarding(), hasIPv4, hasIPv6); err != nil {
@@ -494,6 +499,10 @@ func delVppInterface(logger *logrus.Entry, args *pb.DelRequest) error {
 			err = routing.WithdrawLocalAddress(net.IPNet{IP: addr.IP, Mask: addr.Mask})
 			if err != nil {
 				return err
+			}
+			err = services.WithdrawLocalAddress(addr.IP)
+			if err != nil {
+				return errors.Wrap(err, "failed to withdraw address from services")
 			}
 		}
 		return nil
