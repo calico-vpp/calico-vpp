@@ -73,7 +73,7 @@ func Run(v *vpp_client.VppInterface, l *logrus.Entry) {
 	if err != nil {
 		logger.Fatalf("failed to listen on %s: %v", serverSocket, err)
 	}
-	grpcServer := grpc.NewServer()
+	grpcServer = grpc.NewServer()
 	pb.RegisterCniDataplaneServer(grpcServer, &server{})
 	logger.Infof("CNI server starting")
 
