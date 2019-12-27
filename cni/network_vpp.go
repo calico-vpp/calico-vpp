@@ -32,6 +32,7 @@ import (
 	"github.com/vishvananda/netlink"
 	pb "github.com/vpp-calico/vpp-calico/cni/proto"
 	"github.com/vpp-calico/vpp-calico/routing"
+	"github.com/vpp-calico/vpp-calico/services"
 	"github.com/vpp-calico/vpp-calico/config"
 	"golang.org/x/sys/unix"
 )
@@ -171,6 +172,10 @@ func addVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 			Netns:         netns,
 		})
 		return "", "", err
+	}
+	err = services.AnnounceContainerInterface(v, swIfIndex)
+	if err != nil {
+		return "", "", errors.Wrap(err, "failed to announce address to services")
 	}
 
 	err = ns.WithNetNSPath(netns, func(hostNS ns.NetNS) error {
@@ -449,6 +454,10 @@ func delVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 		}
 	}
 
+	err = services.WithdrawContainerInterface(v, swIfIndex)
+	if err != nil {
+		return errors.Wrap(err, "service WithdrawContainerInterface errored")
+	}
 	// Delete tap
 	v.DelTap(swIfIndex)
 	logger.Infof("tap %d deletion complete", swIfIndex)
