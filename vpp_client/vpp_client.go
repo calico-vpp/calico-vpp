@@ -17,15 +17,12 @@ package vpp_client
 
 import (
 	"fmt"
-	"net"
 	"sync"
 
-	govpp "git.fd.io/govpp.git"
-	vppapi "git.fd.io/govpp.git/api"
-	vppcore "git.fd.io/govpp.git/core"
-	vppip "github.com/vpp-calico/vpp-calico/vpp-1908-api/ip"
-
 	"github.com/sirupsen/logrus"
+	vppcore "git.fd.io/govpp.git/core"
+    govpp "git.fd.io/govpp.git"
+	vppapi "git.fd.io/govpp.git/api"
 )
 
 type VppInterface struct {
@@ -34,79 +31,6 @@ type VppInterface struct {
 	ch     vppapi.Channel
 	socket string
 	log    *logrus.Entry
-}
-
-func (v *VppInterface) ReplaceRoute(v4 bool, dst net.IPNet, gw net.IP) error {
-	return v.doRoute(v4, dst, gw, 1)
-}
-
-func (v *VppInterface) DelRoute(v4 bool, dst net.IPNet, gw net.IP) error {
-	return v.doRoute(v4, dst, gw, 0)
-}
-
-func (v *VppInterface) doRoute(v4 bool, dst net.IPNet, gw net.IP, isAdd uint8) error {
-	v.lock.Lock()
-	defer v.lock.Unlock()
-
-	prefixLen, _ := dst.Mask.Size()
-
-	route := vppip.IPRoute{
-		TableID: 0,
-		Paths: []vppip.FibPath{
-			{
-				SwIfIndex:  0xffffffff, // Is this correct?????
-				TableID:    0,
-				RpfID:      0,
-				Weight:     1,
-				Preference: 0,
-				Type:       vppip.FIB_API_PATH_TYPE_NORMAL,
-				Flags:      vppip.FIB_API_PATH_FLAG_NONE,
-			},
-		},
-	}
-	if v4 {
-		ip := [4]uint8{}
-		copy(ip[:], dst.IP.To4())
-		route.Prefix = vppip.Prefix{
-			Address: vppip.Address{
-				Af: vppip.ADDRESS_IP4,
-				Un: vppip.AddressUnionIP4(ip),
-			},
-			Len: uint8(prefixLen),
-		}
-		copy(ip[:], gw.To4())
-		route.Paths[0].Proto = vppip.FIB_API_PATH_NH_PROTO_IP4
-		route.Paths[0].Nh.Address = vppip.AddressUnionIP4(ip)
-	} else {
-		ip := [16]uint8{}
-		copy(ip[:], dst.IP.To16())
-		route.Prefix = vppip.Prefix{
-			Address: vppip.Address{
-				Af: vppip.ADDRESS_IP6,
-				Un: vppip.AddressUnionIP6(ip),
-			},
-			Len: uint8(prefixLen),
-		}
-		copy(ip[:], gw.To16())
-		route.Paths[0].Proto = vppip.FIB_API_PATH_NH_PROTO_IP6
-		route.Paths[0].Nh.Address = vppip.AddressUnionIP6(ip)
-	}
-
-	request := &vppip.IPRouteAddDel{
-		IsAdd:       isAdd,
-		IsMultipath: 0,
-		Route:       route,
-	}
-
-	response := &vppip.IPRouteAddDelReply{}
-
-	v.log.Debugf("Route add object: %+v", route)
-
-	err := v.ch.SendRequest(request).ReceiveReply(response)
-	if err != nil || response.Retval != 0 {
-		return fmt.Errorf("Cannot add route in VPP: %v %d", err, response.Retval)
-	}
-	return nil
 }
 
 func (v *VppInterface) GetChannel() (vppapi.Channel, error) {
