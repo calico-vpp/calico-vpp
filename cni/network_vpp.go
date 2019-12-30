@@ -31,9 +31,9 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	pb "github.com/vpp-calico/vpp-calico/cni/proto"
+	"github.com/vpp-calico/vpp-calico/config"
 	"github.com/vpp-calico/vpp-calico/routing"
 	"github.com/vpp-calico/vpp-calico/services"
-	"github.com/vpp-calico/vpp-calico/config"
 	"golang.org/x/sys/unix"
 )
 
@@ -95,33 +95,33 @@ func SetupVppRoutes(v *vpp_client.VppInterface, logger *logrus.Entry, swIfIndex 
 	// Go through all the IPs and add routes for each IP in the result.
 	for _, ipAddr := range ipConfigs {
 		ip := net.IPNet{}
-        isIPv4 := !ipAddr.GetIp().GetIp().GetIsIpv6()
+		isIPv4 := !ipAddr.GetIp().GetIp().GetIsIpv6()
 		ip.IP = ipAddr.GetIp().GetIp().GetIp()
-        if isIPv4 {
+		if isIPv4 {
 			ip.Mask = net.CIDRMask(32, 32)
-        } else {
+		} else {
 			ip.Mask = net.CIDRMask(128, 128)
-        }
-		err := v.ReplaceRoute (isIPv4, ip, ip.IP, swIfIndex)
+		}
+		err := v.ReplaceRoute(isIPv4, ip, ip.IP, swIfIndex)
 		if err != nil {
 			return errors.Wrapf(err, "Cannot add route in VPP")
 		}
 
-        if isIPv4 {
-        	ip := [4]uint8{}
+		if isIPv4 {
+			ip := [4]uint8{}
 			copy(ip[:], ipAddr.GetIp().GetIp().GetIp())
 			address = vppip.Address{
 				Af: vppip.ADDRESS_IP4,
 				Un: vppip.AddressUnionIP4(ip),
 			}
-        } else {
-        	ip := [16]uint8{}
+		} else {
+			ip := [16]uint8{}
 			copy(ip[:], ipAddr.GetIp().GetIp().GetIp())
 			address = vppip.Address{
 				Af: vppip.ADDRESS_IP6,
 				Un: vppip.AddressUnionIP6(ip),
 			}
-        }
+		}
 
 		logrus.WithFields(logrus.Fields{"IP": ipAddr.GetIp()}).Debugf("CNI adding VPP route")
 		neighbor := vppip.IPNeighbor{
@@ -398,13 +398,13 @@ func delVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 
 	tag := netns + "-" + contIfName
 	logger.Debugf("looking for tag %s, len %d", tag, len(tag))
-    err, swIfIndex := v.SearchInterfaceWithTag(tag)
+	err, swIfIndex := v.SearchInterfaceWithTag(tag)
 	if err != nil {
 		return errors.Wrapf(err, "error searching interface with tag %s", tag)
 	}
 
 	logger.Infof("found matching VPP tap interface")
-	v.InterfaceAdminDown(swIfIndex)
+	err = v.InterfaceAdminDown(swIfIndex)
 	if err != nil {
 		return errors.Wrap(err, "InterfaceAdminDown errored")
 	}
@@ -416,14 +416,17 @@ func delVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 			return errors.Wrap(err, "GetInterfaceNeighbors errored")
 		}
 		for _, neighbor := range neighbors {
-			v.DelNeighbor(neighbor)
+			err = v.DelNeighbor(neighbor)
+			if err != nil {
+				logger.Warnf("error deleting neighbor entry from VPP: %v", err)
+			}
 		}
 	}
 
 	// Delete connected routes
 	for isIPv6 := uint8(0); isIPv6 <= 1; isIPv6++ {
 		// TODO: Make TableID configurable?
-		err, routes := v.GetRoutes(0, isIPv6)
+		routes, err := v.GetRoutes(0, isIPv6)
 		if err != nil {
 			return errors.Wrap(err, "GetRoutes errored")
 		}
@@ -450,7 +453,10 @@ func delVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 					continue // Link locals
 				}
 			}
-			v.DelIPRoute(route)
+			err = v.DelIPRoute(route)
+			if err != nil {
+				logger.Warnf("error deleting route %+v from VPP: %v", route, err)
+			}
 		}
 	}
 
@@ -459,7 +465,10 @@ func delVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 		return errors.Wrap(err, "service WithdrawContainerInterface errored")
 	}
 	// Delete tap
-	v.DelTap(swIfIndex)
+	err = v.DelTap(swIfIndex)
+	if err != nil {
+		return errors.Wrap(err, "tap deletion failed")
+	}
 	logger.Infof("tap %d deletion complete", swIfIndex)
 
 	return nil

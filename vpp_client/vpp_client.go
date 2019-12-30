@@ -16,13 +16,13 @@
 package vpp_client
 
 import (
-	"fmt"
 	"sync"
 
-	"github.com/sirupsen/logrus"
-	vppcore "git.fd.io/govpp.git/core"
-    govpp "git.fd.io/govpp.git"
+	govpp "git.fd.io/govpp.git"
 	vppapi "git.fd.io/govpp.git/api"
+	vppcore "git.fd.io/govpp.git/core"
+	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 type VppInterface struct {
@@ -40,15 +40,12 @@ func (v *VppInterface) GetChannel() (vppapi.Channel, error) {
 func NewVppInterface(socket string, logger *logrus.Entry) (*VppInterface, error) {
 	conn, err := govpp.Connect(socket)
 	if err != nil {
-		logger.Errorf("cannot connect to VPP on socket %s", socket)
-		return nil, fmt.Errorf("cannot connect to VPP on socket %s", socket)
+		return nil, errors.Wrapf(err, "cannot connect to VPP on socket %s", socket)
 	}
 
-	// Open channel
 	ch, err := conn.NewAPIChannel()
 	if err != nil {
-		logger.Errorf("VPP API channel creation failed")
-		return nil, fmt.Errorf("channel creation failed")
+		return nil, errors.Wrap(err, "channel creation failed")
 	}
 
 	return &VppInterface{

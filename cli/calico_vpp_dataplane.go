@@ -22,10 +22,10 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/vpp-calico/vpp-calico/cni"
+	"github.com/vpp-calico/vpp-calico/config"
 	"github.com/vpp-calico/vpp-calico/routing"
 	"github.com/vpp-calico/vpp-calico/services"
 	"github.com/vpp-calico/vpp-calico/vpp_client"
-	"github.com/vpp-calico/vpp-calico/config"
 )
 
 func main() {
@@ -34,7 +34,7 @@ func main() {
 	signalChannel := make(chan os.Signal, 2)
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
 
-	vpp, err := vpp_client.NewVppInterface(config.VppSocket, logger.WithFields(logrus.Fields{"component": "vpp-api"}))
+	vpp, err := vpp_client.NewVppInterface(config.VppAPISocket, logger.WithFields(logrus.Fields{"component": "vpp-api"}))
 	if err != nil {
 		logger.Errorf("Cannot create VPP client: %v", err)
 		return

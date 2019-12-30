@@ -1,7 +1,7 @@
 FROM calico/node:v3.9.1
 
 ADD cli/cli /bin/calico-vpp-agent
-ADD config/service/calico-vpp-agent /etc/service/available/calico-vpp-agent
+ADD etc/service/calico-vpp-agent /etc/service/available/calico-vpp-agent
 
 RUN sed -i.orig '/^case "\$CALICO_NETWORKING_BACKEND" in/a \\t"vpp" )\n\
 \tcp -a /etc/service/available/calico-vpp-agent /etc/service/enabled/\n\

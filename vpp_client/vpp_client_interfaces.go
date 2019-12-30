@@ -19,21 +19,23 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/pkg/errors"
+	"github.com/vpp-calico/vpp-calico/config"
 	"github.com/vpp-calico/vpp-calico/vpp-1908-api/interfaces"
 	vppip "github.com/vpp-calico/vpp-calico/vpp-1908-api/ip"
 	"github.com/vpp-calico/vpp-calico/vpp-1908-api/tapv2"
-	"github.com/pkg/errors"
-
-	"github.com/vpp-calico/vpp-calico/config"
 )
 
-func (v *VppInterface) CreateTap (
+const (
+	INVALID_INDEX = ^uint32(0)
+)
+
+func (v *VppInterface) CreateTap(
 	ContNS string,
 	ContIfName string,
 	Tag string,
 	EnableIp6 bool,
 ) (SwIfIndex uint32, vppIPAddress []byte, err error) {
-	invalidIndex := ^uint32(0)
 	response := &tapv2.TapCreateV2Reply{}
 	request := &tapv2.TapCreateV2{
 		// TODO check namespace len < 64?
@@ -50,40 +52,36 @@ func (v *VppInterface) CreateTap (
 	}
 	v.log.Debugf("Tap creation request: %+v", request)
 
+	v.lock.Lock()
 	err = v.ch.SendRequest(request).ReceiveReply(response)
+	v.lock.Unlock()
 	if err != nil {
-		v.log.Errorf("Tap creation request failed")
-		return invalidIndex, vppIPAddress, err
+		return INVALID_INDEX, vppIPAddress, errors.Wrap(err, "Tap creation request failed")
+	} else if response.Retval != 0 {
+		return INVALID_INDEX, vppIPAddress, fmt.Errorf("Tap creation failed (retval %d). Request: %+v", response.Retval, request)
 	}
-
-	if response.Retval != 0 {
-		v.log.Errorf("Tap creation failed")
-		return invalidIndex, vppIPAddress, fmt.Errorf("Vpp tap creation failed with code %d. Request: %+v", response.Retval, request)
-	}
-
 	v.log.Infof("Tap creation successful. sw_if_index = %d", response.SwIfIndex)
 
 	// Add VPP side fake address
 	// TODO: Only if v4 is enabled
 	// There is currently a hard limit in VPP to 1024 taps - so this should be safe
 	vppIPAddress = []byte{169, 254, byte(response.SwIfIndex >> 8), byte(response.SwIfIndex)}
-    err = v.AddInterfaceAddress(response.SwIfIndex, vppIPAddress, 32)
+	err = v.AddInterfaceAddress(response.SwIfIndex, vppIPAddress, 32)
 	if err != nil {
-		return invalidIndex, vppIPAddress, err
+		return INVALID_INDEX, vppIPAddress, errors.Wrap(err, "error adding address to new tap")
 	}
 
 	// Set interface up
 	err = v.InterfaceAdminUp(response.SwIfIndex)
 	if err != nil {
-		return invalidIndex, vppIPAddress, err
+		return INVALID_INDEX, vppIPAddress, errors.Wrap(err, "error setting new tap up")
 	}
 
 	// Add IPv6 neighbor entry if v6 is enabled
 	if EnableIp6 {
 		err = v.EnableInterfaceIP6(response.SwIfIndex)
 		if err != nil {
-			v.log.Errorf("IPv6 enabling failed")
-			return invalidIndex, vppIPAddress, err
+			return INVALID_INDEX, vppIPAddress, errors.Wrap(err, "error enabling IPv6 on new tap")
 		}
 		// Compute a link local address from mac address, and set it
 	}
@@ -91,6 +89,9 @@ func (v *VppInterface) CreateTap (
 }
 
 func (v *VppInterface) addDelInterfaceAddress(swIfIndex uint32, addr []byte, addrLen uint8, isAdd uint8) error {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+
 	request := &interfaces.SwInterfaceAddDelAddress{
 		SwIfIndex:     swIfIndex,
 		IsAdd:         isAdd,
@@ -114,6 +115,9 @@ func (v *VppInterface) AddInterfaceAddress(swIfIndex uint32, addr []byte, addrLe
 }
 
 func (v *VppInterface) enableDisableInterfaceIP6(swIfIndex uint32, enable uint8) error {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+
 	request := &vppip.SwInterfaceIP6EnableDisable{
 		SwIfIndex: swIfIndex,
 		Enable:    enable,
@@ -131,7 +135,9 @@ func (v *VppInterface) EnableInterfaceIP6(swIfIndex uint32) error {
 }
 
 func (v *VppInterface) SearchInterfaceWithTag(tag string) (err error, swIfIndex uint32) {
-	// First, find the right tap
+	v.lock.Lock()
+	defer v.lock.Unlock()
+
 	request := &interfaces.SwInterfaceDump{
 		//NameFilterValid: true,
 		//NameFilter:      "tap",
@@ -157,6 +163,9 @@ func (v *VppInterface) SearchInterfaceWithTag(tag string) (err error, swIfIndex 
 }
 
 func (v *VppInterface) SearchInterfaceWithName(name string) (err error, swIfIndex uint32) {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+
 	request := &interfaces.SwInterfaceDump{
 		SwIfIndex: interfaces.InterfaceIndex(^uint32(0)),
 		// TODO: filter by name with NameFilter
@@ -184,6 +193,9 @@ func (v *VppInterface) SearchInterfaceWithName(name string) (err error, swIfInde
 }
 
 func (v *VppInterface) interfaceAdminUpDown(swIfIndex uint32, updown uint8) error {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+
 	// Set interface down
 	request := &interfaces.SwInterfaceSetFlags{
 		SwIfIndex:   swIfIndex,
@@ -206,6 +218,9 @@ func (v *VppInterface) InterfaceAdminUp(swIfIndex uint32) error {
 }
 
 func (v *VppInterface) GetInterfaceNeighbors(swIfIndex uint32, isIPv6 uint8) (err error, neighbors []vppip.IPNeighbor) {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+
 	request := &vppip.IPNeighborDump{
 		SwIfIndex: swIfIndex,
 		IsIPv6:    isIPv6,
@@ -226,6 +241,9 @@ func (v *VppInterface) GetInterfaceNeighbors(swIfIndex uint32, isIPv6 uint8) (er
 }
 
 func (v *VppInterface) DelTap(swIfIndex uint32) error {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+
 	request := &tapv2.TapDeleteV2{
 		SwIfIndex: swIfIndex,
 	}
@@ -236,5 +254,3 @@ func (v *VppInterface) DelTap(swIfIndex uint32) error {
 	}
 	return nil
 }
-
-

@@ -22,8 +22,8 @@ import (
 
 	"github.com/sirupsen/logrus"
 	pb "github.com/vpp-calico/vpp-calico/cni/proto"
-	"github.com/vpp-calico/vpp-calico/vpp_client"
 	"github.com/vpp-calico/vpp-calico/config"
+	"github.com/vpp-calico/vpp-calico/vpp_client"
 	"google.golang.org/grpc"
 )
 
@@ -72,7 +72,7 @@ func (s *server) Del(ctx context.Context, in *pb.DelRequest) (*pb.DelReply, erro
 
 func GracefulStop() {
 	grpcServer.GracefulStop()
-	syscall.Unlink(config.ServerSocket)
+	syscall.Unlink(config.CNIServerSocket)
 }
 
 // Serve runs the grpc server for the Calico CNI backend API
@@ -81,9 +81,9 @@ func Run(v *vpp_client.VppInterface, l *logrus.Entry) {
 	logger = l
 	vpp = v
 
-	lis, err := net.Listen("unix", config.ServerSocket)
+	lis, err := net.Listen("unix", config.CNIServerSocket)
 	if err != nil {
-		logger.Fatalf("failed to listen on %s: %v", config.ServerSocket, err)
+		logger.Fatalf("failed to listen on %s: %v", config.CNIServerSocket, err)
 	}
 	grpcServer = grpc.NewServer()
 	pb.RegisterCniDataplaneServer(grpcServer, &server{})

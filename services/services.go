@@ -18,42 +18,40 @@ package services
 import (
 	"time"
 
+	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
+	"github.com/vpp-calico/vpp-calico/config"
+	"github.com/vpp-calico/vpp-calico/vpp_client"
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"github.com/pkg/errors"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	"github.com/sirupsen/logrus"
-	"github.com/vpp-calico/vpp-calico/vpp_client"
-	"github.com/vpp-calico/vpp-calico/config"
 )
 
-
-
 func getAllServicePodIPs(client *kubernetes.Clientset, l *logrus.Entry, service *v1.Service) (err error, podIPs []string) {
-    var pods *v1.PodList
-    set := labels.Set(service.Spec.Selector)
+	var pods *v1.PodList
+	set := labels.Set(service.Spec.Selector)
 	for {
 		pods, err = client.CoreV1().Pods(service.ObjectMeta.Namespace).List(metav1.ListOptions{LabelSelector: set.AsSelector().String()})
-    	if err != nil {
+		if err != nil {
 			return errors.Wrap(err, "error Listing pods with selector"), nil
 		}
-    	podIPs = nil
+		podIPs = nil
 		for _, pod := range pods.Items {
-        	if pod.Status.PodIP != "" {
-        		podIPs = append(podIPs, pod.Status.PodIP)
-        	}
+			if pod.Status.PodIP != "" {
+				podIPs = append(podIPs, pod.Status.PodIP)
+			}
 		}
 		if len(podIPs) == len(pods.Items) {
 			return nil, podIPs
 		}
 		l.Errorf("For now %d IPs on %d pods", len(podIPs), len(pods.Items))
 		time.Sleep(time.Second * 1) /* ugly pacing */
-    }
-    return nil, nil
+	}
+	return nil, nil
 }
 
 func GracefulStop() {
@@ -64,23 +62,18 @@ func addServiceNat(client *kubernetes.Clientset, service *v1.Service, v *vpp_cli
 	l.Debugf("Adding service")
 	err = v.EnableNatForwarding()
 	if err != nil {
-		return errors.Wrap(err, "error Enabling forwarding")
+		return errors.Wrap(err, "error enabling forwarding")
 	}
 	err = v.AddNat44Address(service.Spec.ClusterIP)
 	if err != nil {
 		return errors.Wrap(err, "error adding nat44 address")
 	}
-	err, swIfIndex := v.SearchInterfaceWithName (config.NodeInterconnectInterfaceName)
-	if err != nil {
-		return errors.Wrapf(err, "Couldnt find interface %s", config.NodeInterconnectInterfaceName)
-		return
-	}
-	err = v.AddNat44InsideInterface(swIfIndex)
+	err = v.AddNat44InsideInterface(config.DataInterfaceSwIfIndex)
 	if err != nil {
 		return errors.Wrap(err, "error adding nat44 physical interface")
 	}
 
-    err, podIPs := getAllServicePodIPs(client, l, service)
+	err, podIPs := getAllServicePodIPs(client, l, service)
 	if err != nil {
 		return errors.Wrap(err, "error getting podIPs")
 	}
@@ -140,21 +133,21 @@ func Run(v *vpp_client.VppInterface, l *logrus.Entry) {
 	_, informer := cache.NewInformer(
 		listWatch,
 		&v1.Service{},
-		4 * 1000 * 1000 * 1000, // 4 sec in ns
+		4*1000*1000*1000, // 4 sec in ns
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				err := addServiceNat(client, obj.(*v1.Service), v, l)
 				if err != nil {
-					l.Errorf ("addServiceNat Errored %s", err)
+					l.Errorf("addServiceNat Errored %s", err)
 				}
 			},
 			UpdateFunc: func(old interface{}, new interface{}) {
 				// l.Debugf("Updating service")
 			},
 			DeleteFunc: func(obj interface{}) {
-				err := delServiceNat (client, obj.(*v1.Service), v, l)
+				err := delServiceNat(client, obj.(*v1.Service), v, l)
 				if err != nil {
-					l.Errorf ("delServiceNat Errored %s", err)
+					l.Errorf("delServiceNat Errored %s", err)
 				}
 			},
 		})

@@ -16,13 +16,12 @@
 package config
 
 const (
-	NodeInterconnectInterfaceName string = "FortyGigabitEthernetd8/0/0"
-	ServerSocket = "/var/run/calico/cni-server.sock"
-	VppSocket = "/var/run/vpp/vpp-api.sock"
+	DataInterfaceSwIfIndex = uint32(1) // Assumption: the VPP config ensures this is true
+	CNIServerSocket        = "/var/run/calico/cni-server.sock"
+	VppAPISocket           = "/var/run/vpp/vpp-api.sock"
 )
 
 var (
 	VppSideMacAddress       = [6]byte{2, 0, 0, 0, 0, 2}
 	ContainerSideMacAddress = [6]byte{2, 0, 0, 0, 0, 1}
 )
-
