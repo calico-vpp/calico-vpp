@@ -1,3 +1,18 @@
+// Copyright (C) 2019 Cisco Systems Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+// implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package cni
 
 import (
@@ -7,24 +22,19 @@ import (
 	"net"
 	"os"
 
-	"github.com/vpp-calico/vpp-calico/vpp-1908-api/interfaces"
 	vppip "github.com/vpp-calico/vpp-calico/vpp-1908-api/ip"
-	"github.com/vpp-calico/vpp-calico/vpp-1908-api/tapv2"
+	"github.com/vpp-calico/vpp-calico/vpp_client"
 
-	vppapi "git.fd.io/govpp.git/api"
 	"github.com/containernetworking/plugins/pkg/ip"
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	pb "github.com/vpp-calico/vpp-calico/cni/proto"
+	"github.com/vpp-calico/vpp-calico/config"
 	"github.com/vpp-calico/vpp-calico/routing"
+	"github.com/vpp-calico/vpp-calico/services"
 	"golang.org/x/sys/unix"
-)
-
-var (
-	vppSideMacAddress       = [6]byte{2, 0, 0, 0, 0, 2}
-	containerSideMacAddress = [6]byte{2, 0, 0, 0, 0, 1}
 )
 
 func ifNameToSwIfIdx(name string) (uint32, error) {
@@ -78,99 +88,58 @@ func configureContainerSysctls(logger *logrus.Entry, allowIPForwarding, hasIPv4,
 	return nil
 }
 
-func createVppTap(
-	logger *logrus.Entry,
-	ch vppapi.Channel,
-	ContNS string,
-	ContIfName string,
-	Tag string,
-	EnableIp6 bool,
-) (SwIfIndex uint32, vppIPAddress []byte, err error) {
-	invalidIndex := ^uint32(0)
-	response := &tapv2.TapCreateV2Reply{}
-	request := &tapv2.TapCreateV2{
-		// TODO check namespace len < 64?
-		// TODO set MTU?
-		ID:               ^uint32(0),
-		HostNamespace:    []byte(ContNS),
-		HostNamespaceSet: 1,
-		HostIfName:       []byte(ContIfName),
-		HostIfNameSet:    1,
-		Tag:              []byte(Tag),
-		MacAddress:       vppSideMacAddress[:],
-		HostMacAddr:      containerSideMacAddress[:],
-		HostMacAddrSet:   1,
-	}
-	logger.Debugf("Tap creation request: %+v", request)
-
-	err = ch.SendRequest(request).ReceiveReply(response)
-	if err != nil {
-		logger.Errorf("Tap creation request failed")
-		return invalidIndex, vppIPAddress, err
-	}
-
-	if response.Retval != 0 {
-		logger.Errorf("Tap creation failed")
-		return invalidIndex, vppIPAddress, fmt.Errorf("Vpp tap creation failed with code %d. Request: %+v", response.Retval, request)
-	}
-
-	logger.Infof("Tap creation successful. sw_if_index = %d", response.SwIfIndex)
-
-	// Add VPP side fake address
-	// TODO: Only if v4 is enabled
-	// There is currently a hard limit in VPP to 1024 taps - so this should be safe
-	vppIPAddress = []byte{169, 254, byte(response.SwIfIndex >> 8), byte(response.SwIfIndex)}
-
-	addrAddRequest := &interfaces.SwInterfaceAddDelAddress{
-		SwIfIndex:     response.SwIfIndex,
-		IsAdd:         1,
-		AddressLength: 32,
-		Address:       vppIPAddress,
-	}
-	addrAddResponse := &interfaces.SwInterfaceAddDelAddressReply{}
-	err = ch.SendRequest(addrAddRequest).ReceiveReply(addrAddResponse)
-	if err != nil {
-		logger.Errorf("Adding IP address failed: req %+v reply %+v", addrAddRequest, addrAddResponse)
-		return invalidIndex, vppIPAddress, err
-	}
-
-	// Set interface up
-	AdminUpRequest := &interfaces.SwInterfaceSetFlags{
-		SwIfIndex:   response.SwIfIndex,
-		AdminUpDown: 1,
-	}
-	AdminUpResponse := &interfaces.SwInterfaceSetFlagsReply{}
-	err = ch.SendRequest(AdminUpRequest).ReceiveReply(AdminUpResponse)
-	if err != nil {
-		logger.Errorf("Setting interface up failed")
-		return invalidIndex, vppIPAddress, err
-	}
-
-	// Add IPv6 neighbor entry if v6 is enabled
-
-	if EnableIp6 {
-		// TODO disable RA
-		Ip6EnableRequest := &vppip.SwInterfaceIP6EnableDisable{
-			SwIfIndex: response.SwIfIndex,
-			Enable:    1,
+// SetupRoutes sets up the routes for the host side of the veth pair.
+func SetupVppRoutes(v *vpp_client.VppInterface, logger *logrus.Entry, swIfIndex uint32, ipConfigs []*pb.IPConfig) error {
+	var address vppip.Address
+	logger.Infof("Configuring VPP side routes")
+	// Go through all the IPs and add routes for each IP in the result.
+	for _, ipAddr := range ipConfigs {
+		ip := net.IPNet{}
+		isIPv4 := !ipAddr.GetIp().GetIp().GetIsIpv6()
+		ip.IP = ipAddr.GetIp().GetIp().GetIp()
+		if isIPv4 {
+			ip.Mask = net.CIDRMask(32, 32)
+		} else {
+			ip.Mask = net.CIDRMask(128, 128)
 		}
-		Ip6EnableResponse := &vppip.SwInterfaceIP6EnableDisableReply{}
-		err = ch.SendRequest(Ip6EnableRequest).ReceiveReply(Ip6EnableResponse)
+		err := v.ReplaceRoute(isIPv4, ip, ip.IP, swIfIndex)
 		if err != nil {
-			logger.Errorf("IPv6 enabling failed")
-			return invalidIndex, vppIPAddress, err
+			return errors.Wrapf(err, "Cannot add route in VPP")
 		}
-		// Compute a link local address from mac address, and set it
 
+		if isIPv4 {
+			ip := [4]uint8{}
+			copy(ip[:], ipAddr.GetIp().GetIp().GetIp())
+			address = vppip.Address{
+				Af: vppip.ADDRESS_IP4,
+				Un: vppip.AddressUnionIP4(ip),
+			}
+		} else {
+			ip := [16]uint8{}
+			copy(ip[:], ipAddr.GetIp().GetIp().GetIp())
+			address = vppip.Address{
+				Af: vppip.ADDRESS_IP6,
+				Un: vppip.AddressUnionIP6(ip),
+			}
+		}
+
+		logrus.WithFields(logrus.Fields{"IP": ipAddr.GetIp()}).Debugf("CNI adding VPP route")
+		neighbor := vppip.IPNeighbor{
+			SwIfIndex:  swIfIndex,
+			Flags:      vppip.IP_API_NEIGHBOR_FLAG_STATIC,
+			MacAddress: config.ContainerSideMacAddress,
+			IPAddress:  address,
+		}
+		err = v.AddNeighbor(neighbor)
+		if err != nil {
+			return errors.Wrapf(err, "Cannot add neighbor in VPP")
+		}
 	}
-	return response.SwIfIndex, vppIPAddress, err
+	return nil
 }
 
 // DoVppNetworking performs the networking for the given config and IPAM result
-func addVppInterface(
-	logger *logrus.Entry,
-	args *pb.AddRequest,
-) (ifName, contTapMac string, err error) {
+func addVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.AddRequest) (ifName, contTapMac string, err error) {
 	logger.Infof("creating container interface using VPP networking")
 
 	// Select the first 11 characters of the containerID for the host veth.
@@ -194,22 +163,19 @@ func addVppInterface(
 		}
 	}
 
-	ch, err := vpp.GetChannel()
-	if err != nil {
-		return "", "", errors.Wrap(err, "error opening VPP API channel")
-	}
-	defer ch.Close()
-
 	// TODO: Clean up old tap if one is found with this tag
-
-	swIfIndex, vppIPAddr, err := createVppTap(logger, ch, netns, contTapName, tapTag, hasIPv6)
+	swIfIndex, vppIPAddr, err := v.CreateTap(netns, contTapName, tapTag, hasIPv6)
 	logger.Infof("Created tap with sw_if_index %d err %v", swIfIndex, err)
 	if err != nil {
-		delVppInterface(logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
+		delVppInterface(v, logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
 			InterfaceName: contTapName,
 			Netns:         netns,
 		})
 		return "", "", err
+	}
+	err = services.AnnounceContainerInterface(v, swIfIndex)
+	if err != nil {
+		return "", "", errors.Wrap(err, "failed to announce address to services")
 	}
 
 	err = ns.WithNetNSPath(netns, func(hostNS ns.NetNS) error {
@@ -232,7 +198,7 @@ func addVppInterface(
 					Family:       netlink.FAMILY_V4,
 					State:        netlink.NUD_PERMANENT,
 					IP:           vppIPAddr,
-					HardwareAddr: vppSideMacAddress[:],
+					HardwareAddr: config.VppSideMacAddress[:],
 				},
 			)
 			if err != nil {
@@ -364,7 +330,7 @@ func addVppInterface(
 
 	if err != nil {
 		logger.Errorf("Error creating or configuring tap: %s", err)
-		delVppInterface(logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
+		delVppInterface(v, logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
 			InterfaceName: contTapName,
 			Netns:         netns,
 		})
@@ -372,9 +338,9 @@ func addVppInterface(
 	}
 
 	// Now that the host side of the veth is moved, state set to UP, and configured with sysctls, we can add the routes to it in the host namespace.
-	err = SetupVppRoutes(ch, swIfIndex, args.GetContainerIps(), logger)
+	err = SetupVppRoutes(v, logger, swIfIndex, args.GetContainerIps())
 	if err != nil {
-		delVppInterface(logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
+		delVppInterface(v, logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
 			InterfaceName: contTapName,
 			Netns:         netns,
 		})
@@ -385,88 +351,8 @@ func addVppInterface(
 	return swIfIdxToIfName(swIfIndex), contTapMac, err
 }
 
-// SetupRoutes sets up the routes for the host side of the veth pair.
-func SetupVppRoutes(ch vppapi.Channel, swIfIndex uint32, config []*pb.IPConfig, logger *logrus.Entry) error {
-	logger.Infof("Configuring VPP side routes")
-	// Go through all the IPs and add routes for each IP in the result.
-	for _, ipAddr := range config {
-		logger.Debugf("Adding one route to %+v", ipAddr)
-		request := &vppip.IPRouteAddDel{
-			IsAdd:       1,
-			IsMultipath: 0,
-			Route: vppip.IPRoute{
-				TableID: 0,
-				Paths: []vppip.FibPath{
-					{
-						SwIfIndex:  swIfIndex,
-						TableID:    0,
-						RpfID:      0,
-						Weight:     1,
-						Preference: 0,
-						Type:       vppip.FIB_API_PATH_TYPE_NORMAL,
-						Flags:      vppip.FIB_API_PATH_FLAG_NONE,
-						Proto:      vppip.FIB_API_PATH_NH_PROTO_IP4,
-					},
-				},
-			},
-		}
-
-		if !ipAddr.GetIp().GetIp().GetIsIpv6() {
-			ip := [4]uint8{}
-			copy(ip[:], ipAddr.GetIp().GetIp().GetIp())
-			request.Route.Prefix = vppip.Prefix{
-				Address: vppip.Address{
-					Af: vppip.ADDRESS_IP4,
-					Un: vppip.AddressUnionIP4(ip),
-				},
-				Len: 32,
-			}
-		} else {
-			ip := [16]uint8{}
-			copy(ip[:], ipAddr.GetIp().GetIp().GetIp())
-			request.Route.Paths[0].Proto = vppip.FIB_API_PATH_NH_PROTO_IP6
-			request.Route.Prefix = vppip.Prefix{
-				Address: vppip.Address{
-					Af: vppip.ADDRESS_IP6,
-					Un: vppip.AddressUnionIP6(ip),
-				},
-				Len: 128,
-			}
-		}
-		request.Route.Paths[0].Nh.Address = request.Route.Prefix.Address.Un
-
-		response := &vppip.IPRouteAddDelReply{}
-
-		logger.Debugf("Route add object: %+v", request)
-
-		err := ch.SendRequest(request).ReceiveReply(response)
-		if err != nil || response.Retval != 0 {
-			return fmt.Errorf("Cannot add route in VPP: %v %d", err, response.Retval)
-		}
-
-		logrus.WithFields(logrus.Fields{"IP": ipAddr.GetIp()}).Debugf("CNI adding VPP route")
-
-		// Adding neighbor entry
-		neighAddRequest := &vppip.IPNeighborAddDel{
-			IsAdd: 1,
-			Neighbor: vppip.IPNeighbor{
-				SwIfIndex:  swIfIndex,
-				Flags:      vppip.IP_API_NEIGHBOR_FLAG_STATIC,
-				MacAddress: containerSideMacAddress,
-				IPAddress:  request.Route.Prefix.Address,
-			},
-		}
-		neighAddReply := &vppip.IPNeighborAddDelReply{}
-		err = ch.SendRequest(neighAddRequest).ReceiveReply(neighAddReply)
-		if err != nil || neighAddReply.Retval != 0 {
-			return fmt.Errorf("Cannot add neighbor in VPP: %v %d", err, neighAddReply.Retval)
-		}
-	}
-	return nil
-}
-
 // CleanUpVPPNamespace deletes the devices in the network namespace.
-func delVppInterface(logger *logrus.Entry, args *pb.DelRequest) error {
+func delVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.DelRequest) error {
 	contIfName := args.GetInterfaceName()
 	netns := args.GetNetns()
 	logger.Infof("deleting container interface using VPP networking, netns: %s, interface: %s", netns, contIfName)
@@ -510,154 +396,80 @@ func delVppInterface(logger *logrus.Entry, args *pb.DelRequest) error {
 
 	}
 
-	ch, err := vpp.GetChannel()
-	if err != nil {
-		return errors.Wrap(err, "error opening VPP API channel")
-	}
-	defer ch.Close()
-
-	// First, find the right tap
-	intfDumpRequest := &interfaces.SwInterfaceDump{
-		//NameFilterValid: true,
-		//NameFilter:      "tap",
-	}
 	tag := netns + "-" + contIfName
 	logger.Debugf("looking for tag %s, len %d", tag, len(tag))
-	intf := &interfaces.SwInterfaceDetails{}
-	stream := ch.SendMultiRequest(intfDumpRequest)
-	for {
-		stop, err := stream.ReceiveReply(intf)
-		if err != nil {
-			logger.Errorf("error listing VPP interfaces: %v", err)
-			return err
-		}
-		if stop {
-			logger.Errorf("error: interface to delete not found")
-			return fmt.Errorf("VPP Error: interface to delete not found")
-		}
-		intfTag := string(bytes.Trim([]byte(intf.Tag), "\x00"))
-		logger.Debugf("found interface %d, tag: %s (len %d)", intf.SwIfIndex, intfTag, len(intfTag))
-		if intfTag == tag {
-			break
-		}
-	}
-
-	logger.Infof("found matching VPP tap interface: %+v", intf)
-
-	// Set interface down
-	AdminDownRequest := &interfaces.SwInterfaceSetFlags{
-		SwIfIndex:   intf.SwIfIndex,
-		AdminUpDown: 0,
-	}
-	AdminDownResponse := &interfaces.SwInterfaceSetFlagsReply{}
-	err = ch.SendRequest(AdminDownRequest).ReceiveReply(AdminDownResponse)
+	err, swIfIndex := v.SearchInterfaceWithTag(tag)
 	if err != nil {
-		logger.Errorf("setting interface down failed")
-		return err
+		return errors.Wrapf(err, "error searching interface with tag %s", tag)
+	}
+
+	logger.Infof("found matching VPP tap interface")
+	err = v.InterfaceAdminDown(swIfIndex)
+	if err != nil {
+		return errors.Wrap(err, "InterfaceAdminDown errored")
 	}
 
 	// Delete neighbor entries. Is it really necessary?
 	for isIPv6 := uint8(0); isIPv6 <= 1; isIPv6++ {
-		neighDumpRequest := &vppip.IPNeighborDump{
-			SwIfIndex: intf.SwIfIndex,
-			IsIPv6:    isIPv6,
+		err, neighbors := v.GetInterfaceNeighbors(swIfIndex, isIPv6)
+		if err != nil {
+			return errors.Wrap(err, "GetInterfaceNeighbors errored")
 		}
-		neighDumpReply := &vppip.IPNeighborDetails{}
-		stream := ch.SendMultiRequest(neighDumpRequest)
-		neighbors := make([]vppip.IPNeighborAddDel, 0, 10)
-		for {
-			stop, err := stream.ReceiveReply(neighDumpReply)
+		for _, neighbor := range neighbors {
+			err = v.DelNeighbor(neighbor)
 			if err != nil {
-				logger.Errorf("error listing VPP neighbors: %v", err)
-				return err
+				logger.Warnf("error deleting neighbor entry from VPP: %v", err)
 			}
-			if stop {
-				break
-			}
-			neighbors = append(neighbors, vppip.IPNeighborAddDel{
-				IsAdd:    0,
-				Neighbor: neighDumpReply.Neighbor,
-			})
-		}
-		for i := 0; i < len(neighbors); i++ {
-			neighDelReply := &vppip.IPNeighborAddDelReply{}
-			err = ch.SendRequest(&neighbors[i]).ReceiveReply(neighDelReply)
-			if err != nil {
-				logger.Warnf("failed to delete neighbor from VPP")
-			}
-			logger.Debugf("deleted neighbor %+v", neighbors[i])
 		}
 	}
 
 	// Delete connected routes
 	for isIPv6 := uint8(0); isIPv6 <= 1; isIPv6++ {
-		routeDumpRequest := &vppip.IPRouteDump{
-			Table: vppip.IPTable{
-				TableID: 0, // TODO: Make configurable?
-				IsIP6:   isIPv6,
-			},
+		// TODO: Make TableID configurable?
+		routes, err := v.GetRoutes(0, isIPv6)
+		if err != nil {
+			return errors.Wrap(err, "GetRoutes errored")
 		}
-		routeDumpReply := &vppip.IPRouteDetails{}
-		stream := ch.SendMultiRequest(routeDumpRequest)
-		routes := make([]vppip.IPRouteAddDel, 0, 10)
-		for {
-			stop, err := stream.ReceiveReply(routeDumpReply)
-			if err != nil {
-				logger.Errorf("error listing VPP routes: %v", err)
-				return err
-			}
-			if stop {
-				break
-			}
+		for _, route := range routes {
 			// Filter routes we don't want to delete
-			if routeDumpReply.Route.NPaths != 1 || routeDumpReply.Route.Paths[0].SwIfIndex != intf.SwIfIndex {
+			if route.NPaths != 1 || route.Paths[0].SwIfIndex != swIfIndex {
 				continue // Routes on other interfaces
 			}
 			if isIPv6 == 0 {
-				if routeDumpReply.Route.Prefix.Len != 32 {
+				if route.Prefix.Len != 32 {
 					continue
 				}
-				ip4 := routeDumpReply.Route.Prefix.Address.Un.GetIP4()
+				ip4 := route.Prefix.Address.Un.GetIP4()
 				if bytes.Equal(ip4[0:2], []uint8{169, 254}) {
 					continue // Addresses configured on VPP side
 				}
 			}
 			if isIPv6 == 1 {
-				if routeDumpReply.Route.Prefix.Len != 128 {
+				if route.Prefix.Len != 128 {
 					continue
 				}
-				ip6 := routeDumpReply.Route.Prefix.Address.Un.GetIP6()
+				ip6 := route.Prefix.Address.Un.GetIP6()
 				if bytes.Equal(ip6[0:2], []uint8{0xfe, 0x80}) {
 					continue // Link locals
 				}
 			}
-			routes = append(routes, vppip.IPRouteAddDel{
-				IsAdd: 0,
-				Route: routeDumpReply.Route,
-			})
-		}
-		for i := 0; i < len(routes); i++ {
-			routeDelReply := &vppip.IPRouteAddDelReply{}
-			err = ch.SendRequest(&routes[i]).ReceiveReply(routeDelReply)
+			err = v.DelIPRoute(route)
 			if err != nil {
-				logger.Warnf("failed to delete route from VPP")
+				logger.Warnf("error deleting route %+v from VPP: %v", route, err)
 			}
-			logger.Debugf("deleted route %+v", routes[i])
 		}
 	}
 
-	// Delete tap
-	tapDeleteRequest := &tapv2.TapDeleteV2{
-		SwIfIndex: intf.SwIfIndex,
-	}
-	tapDeleteReply := &tapv2.TapDeleteV2Reply{}
-	err = ch.SendRequest(tapDeleteRequest).ReceiveReply(tapDeleteReply)
+	err = services.WithdrawContainerInterface(v, swIfIndex)
 	if err != nil {
-		logger.Errorf("failed to delete tap from VPP")
-		return err
+		return errors.Wrap(err, "service WithdrawContainerInterface errored")
 	}
-
-	logger.Infof("tap %d deletion complete", intf.SwIfIndex)
+	// Delete tap
+	err = v.DelTap(swIfIndex)
+	if err != nil {
+		return errors.Wrap(err, "tap deletion failed")
+	}
+	logger.Infof("tap %d deletion complete", swIfIndex)
 
 	return nil
 }

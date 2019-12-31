@@ -53,7 +53,7 @@ const (
 
 	RTPROT_GOBGP = 0x11
 
-	prefixWatchInterval = 60 * time.Second
+	prefixWatchInterval = 5 * time.Second
 )
 
 var (
@@ -492,10 +492,10 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 
 	if path.IsWithdraw {
 		s.l.Debugf("removing route %s from VPP", dst.String())
-		return errors.Wrap(s.vpp.DelRoute(isV4, dst, nexthop), "error deleting route")
+		return errors.Wrap(s.vpp.DelRoute(isV4, dst, nexthop, vpp_client.INTERFACE_ANY), "error deleting route")
 	}
 	s.l.Printf("adding route %s to VPP", dst.String())
-	return errors.Wrap(s.vpp.ReplaceRoute(isV4, dst, nexthop), "error replacing route")
+	return errors.Wrap(s.vpp.ReplaceRoute(isV4, dst, nexthop, vpp_client.INTERFACE_ANY), "error replacing route")
 }
 
 // watchBGPPath watches BGP routes from other peers and inject them into
