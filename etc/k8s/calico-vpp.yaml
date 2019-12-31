@@ -608,7 +608,7 @@ spec:
         # container programs network policy and routes on each
         # host.
         - name: calico-node
-          image: calicovpp/node:v3.9.1-3
+          image: calicovpp/node:v3.9.1-4
           env:
             # Use Kubernetes API as the backing datastore.
             - name: DATASTORE_TYPE
@@ -698,7 +698,7 @@ spec:
             - name: vpp-rundir
               mountPath: /var/run/vpp
         - name: vpp
-          image: calicovpp/vpp:v3.9.1-7
+          image: calicovpp/vpp:v3.9.1-8
           securityContext:
             privileged: true
             capabilities:
