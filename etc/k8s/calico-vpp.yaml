@@ -54,6 +54,8 @@ data:
 
   vpp_dataplane_interface: eth1
 
+  default_ipv4_pool_cidr: 10.0.0.0/16
+
   # Configuration template for VPP.
   vpp_config_template: |-
     unix {
@@ -633,7 +635,10 @@ spec:
             # chosen from this range. Changing this value after installation will have
             # no effect. This should fall within `--cluster-cidr`.
             - name: CALICO_IPV4POOL_CIDR
-              value: "192.168.0.0/16"
+              valueFrom:
+                configMapKeyRef:
+                  name: calico-config
+                  key: default_ipv4_pool_cidr
             # Disable file logging so `kubectl logs` works.
             - name: CALICO_DISABLE_FILE_LOGGING
               value: "true"
@@ -686,7 +691,7 @@ spec:
             - name: vpp-rundir
               mountPath: /var/run/vpp
         - name: vpp
-          image: calicovpp/vpp:v3.9.1-8
+          image: calicovpp/vpp:v3.9.1-11
           securityContext:
             privileged: true
             capabilities:
