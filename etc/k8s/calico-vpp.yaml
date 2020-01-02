@@ -550,18 +550,6 @@ spec:
       terminationGracePeriodSeconds: 0
       priorityClassName: system-node-critical
       initContainers:
-        # This container performs some configuration. It can be deleted if this configuration
-        # is guaranteed on the host.
-        - name: sysctl-config
-          image: debian:buster
-          command: ["sh", "-c", "apt update; apt install -y kmod procps; modprobe uio_pci_generic; sysctl -w vm.nr_hugepages=1024; sleep 1;"]
-          securityContext:
-            privileged: true
-          volumeMounts:
-            - name: hostsys
-              mountPath: /sys
-            - name: lib-modules
-              mountPath: /lib/modules
         # This container installs the CNI binaries
         # and CNI network config file on each node.
         - name: install-cni
