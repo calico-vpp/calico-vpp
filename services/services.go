@@ -16,8 +16,6 @@
 package services
 
 import (
-	"time"
-
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/vpp-calico/vpp-calico/config"
@@ -25,33 +23,28 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 )
 
-func getAllServicePodIPs(client *kubernetes.Clientset, l *logrus.Entry, service *v1.Service) (err error, podIPs []string) {
-	var pods *v1.PodList
-	set := labels.Set(service.Spec.Selector)
-	for {
-		pods, err = client.CoreV1().Pods(service.ObjectMeta.Namespace).List(metav1.ListOptions{LabelSelector: set.AsSelector().String()})
-		if err != nil {
-			return errors.Wrap(err, "error Listing pods with selector"), nil
-		}
-		podIPs = nil
-		for _, pod := range pods.Items {
-			if pod.Status.PodIP != "" {
-				podIPs = append(podIPs, pod.Status.PodIP)
-			}
-		}
-		if len(podIPs) == len(pods.Items) {
-			return nil, podIPs
-		}
-		l.Errorf("For now %d IPs on %d pods", len(podIPs), len(pods.Items))
-		time.Sleep(time.Second * 1) /* ugly pacing */
+func getAllServicePodIPs(client *kubernetes.Clientset, l *logrus.Entry, service *v1.Service) (podIPs []string, err error) {
+	endpoint, err := client.CoreV1().Endpoints(service.GetNamespace()).Get(
+		service.GetName(),
+		metav1.GetOptions{},
+	)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Could not get endpoint %s in ns %s", service.GetName(), service.GetNamespace())
 	}
-	return nil, nil
+	// This is currently incorrect, we should check which ports are available for each set addresses
+	// See: https://godoc.org/k8s.io/api/core/v1#Endpoints
+
+	for _, set := range endpoint.Subsets {
+		for _, addr := range set.Addresses {
+			podIPs = append(podIPs, addr.IP)
+		}
+	}
+	return podIPs, nil
 }
 
 func GracefulStop() {
@@ -73,10 +66,11 @@ func addServiceNat(client *kubernetes.Clientset, service *v1.Service, v *vpp_cli
 		return errors.Wrap(err, "error adding nat44 physical interface")
 	}
 
-	err, podIPs := getAllServicePodIPs(client, l, service)
+	podIPs, err := getAllServicePodIPs(client, l, service)
 	if err != nil {
 		return errors.Wrap(err, "error getting podIPs")
 	}
+	l.Debugf("Found %d IPs for %s/%s service: %v", len(podIPs), service.GetNamespace(), service.GetName(), podIPs)
 
 	for _, servicePort := range service.Spec.Ports {
 		err := v.AddNat44LBStaticMapping(servicePort, service.Spec.ClusterIP, podIPs)
@@ -97,7 +91,7 @@ func WithdrawContainerInterface(v *vpp_client.VppInterface, swIfIndex uint32) er
 
 func delServiceNat(client *kubernetes.Clientset, service *v1.Service, v *vpp_client.VppInterface, l *logrus.Entry) (err error) {
 	l.Debugf("Deleting service")
-	err, podIPs := getAllServicePodIPs(client, l, service)
+	podIPs, err := getAllServicePodIPs(client, l, service)
 	if err != nil {
 		return errors.Wrap(err, "error getting podIPs")
 	}
