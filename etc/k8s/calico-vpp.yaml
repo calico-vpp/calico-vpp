@@ -54,7 +54,7 @@ data:
 
   vpp_dataplane_interface: eth1
 
-  default_ipv4_pool_cidr: 10.0.0.0/16
+  default_ipv4_pool_cidr: 172.16.0.0/16
 
   # Configuration template for VPP.
   vpp_config_template: |-
