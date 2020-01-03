@@ -219,7 +219,7 @@ func (s *Server) updateBGPPeer(ip string, asn uint32) error {
 }
 
 func (s *Server) deleteBGPPeer(ip string) error {
-	s.l.Infof("Adding BGP neighbor: %s", ip)
+	s.l.Infof("Deleting BGP neighbor: %s", ip)
 	err := s.bgpServer.DeletePeer(context.Background(), &bgpapi.DeletePeerRequest{Address: ip})
 	return err
 }

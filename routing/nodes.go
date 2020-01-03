@@ -143,7 +143,7 @@ func (s *Server) handleNodeUpdate(
 	eventType watch.EventType,
 	isMesh bool,
 ) (bool, error) {
-	s.l.Tracef("Got node update: mesh:%t %s %s %+v %v", isMesh, eventType, nodeName, newSpec, state)
+	s.l.Debugf("Got node update: mesh:%t %s %s %+v %v", isMesh, eventType, nodeName, newSpec, state)
 	if nodeName == s.nodeName {
 		// No need to manage ourselves, but if we change we need to restart and reconfigure
 		if eventType == watch.Deleted {
@@ -199,7 +199,7 @@ func (s *Server) handleNodeUpdate(
 	case watch.Added, watch.Modified:
 		old, found := state[nodeName]
 		if found {
-			s.l.Tracef("node comparison: old:%+v new:%+v", old.Spec.BGP, newSpec.BGP)
+			s.l.Debugf("node comparison: old:%+v new:%+v", old.Spec.BGP, newSpec.BGP)
 			var oldASN uint32
 			if old.Spec.BGP.ASNumber != nil {
 				oldASN = uint32(*old.Spec.BGP.ASNumber)
