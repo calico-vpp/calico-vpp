@@ -235,7 +235,6 @@ func (v *VppInterface) AddNat44LB(
 		return v.AddNat44StaticMapping(serviceIP, serviceProto, servicePort, backendIPs[0], backendPort)
 	}
 	return v.AddNat44LBStaticMapping(serviceIP, serviceProto, servicePort, backendIPs, backendPort)
-	return nil
 }
 
 func (v *VppInterface) DelNat44LB(
@@ -251,5 +250,4 @@ func (v *VppInterface) DelNat44LB(
 		return v.DelNat44StaticMapping(serviceIP, serviceProto, servicePort)
 	}
 	return v.DelNat44LBStaticMapping(serviceIP, serviceProto, servicePort)
-	return nil
 }
