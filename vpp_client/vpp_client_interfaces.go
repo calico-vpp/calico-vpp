@@ -50,17 +50,17 @@ func (v *VppInterface) CreateTap(
 		HostMacAddr:      config.ContainerSideMacAddress[:],
 		HostMacAddrSet:   1,
 	}
-	v.log.Debugf("Tap creation request: %+v", request)
 
 	v.lock.Lock()
+	v.log.Debugf("Tap creation request: %+v", request)
 	err = v.ch.SendRequest(request).ReceiveReply(response)
+	v.log.Infof("Tap creation: err %v retval %d sw_if_index = %d", err, response.Retval, response.SwIfIndex)
 	v.lock.Unlock()
 	if err != nil {
 		return INVALID_INDEX, vppIPAddress, errors.Wrap(err, "Tap creation request failed")
 	} else if response.Retval != 0 {
 		return INVALID_INDEX, vppIPAddress, fmt.Errorf("Tap creation failed (retval %d). Request: %+v", response.Retval, request)
 	}
-	v.log.Infof("Tap creation successful. sw_if_index = %d", response.SwIfIndex)
 
 	// Add VPP side fake address
 	// TODO: Only if v4 is enabled
