@@ -21,9 +21,9 @@ import (
 	"syscall"
 
 	"github.com/sirupsen/logrus"
-	pb "github.com/vpp-calico/vpp-calico/cni/proto"
-	"github.com/vpp-calico/vpp-calico/config"
-	"github.com/vpp-calico/vpp-calico/vpp_client"
+	pb "github.com/calico-vpp/calico-vpp/cni/proto"
+	"github.com/calico-vpp/calico-vpp/config"
+	"github.com/calico-vpp/calico-vpp/vpp_client"
 	"google.golang.org/grpc"
 )
 

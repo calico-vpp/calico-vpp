@@ -20,8 +20,8 @@ import (
 	"net"
 
 	"github.com/pkg/errors"
-	"github.com/vpp-calico/vpp-calico/vpp-1908-api/ip"
-	"github.com/vpp-calico/vpp-calico/vpp-1908-api/nat"
+	"github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
+	"github.com/calico-vpp/calico-vpp/vpp-1908-api/nat"
 )
 
 func parseIP4Address(address string) nat.IP4Address {

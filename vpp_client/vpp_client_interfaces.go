@@ -20,10 +20,10 @@ import (
 	"fmt"
 
 	"github.com/pkg/errors"
-	"github.com/vpp-calico/vpp-calico/config"
-	"github.com/vpp-calico/vpp-calico/vpp-1908-api/interfaces"
-	vppip "github.com/vpp-calico/vpp-calico/vpp-1908-api/ip"
-	"github.com/vpp-calico/vpp-calico/vpp-1908-api/tapv2"
+	"github.com/calico-vpp/calico-vpp/config"
+	"github.com/calico-vpp/calico-vpp/vpp-1908-api/interfaces"
+	vppip "github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
+	"github.com/calico-vpp/calico-vpp/vpp-1908-api/tapv2"
 )
 
 const (

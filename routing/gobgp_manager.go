@@ -42,7 +42,7 @@ import (
 	"google.golang.org/grpc"
 	"gopkg.in/tomb.v2"
 
-	"github.com/vpp-calico/vpp-calico/vpp_client"
+	"github.com/calico-vpp/calico-vpp/vpp_client"
 )
 
 const (

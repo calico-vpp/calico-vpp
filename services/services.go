@@ -23,9 +23,9 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"github.com/vpp-calico/vpp-calico/config"
-	vppip "github.com/vpp-calico/vpp-calico/vpp-1908-api/ip"
-	"github.com/vpp-calico/vpp-calico/vpp_client"
+	"github.com/calico-vpp/calico-vpp/config"
+	vppip "github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
+	"github.com/calico-vpp/calico-vpp/vpp_client"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/intstr"

@@ -21,11 +21,11 @@ import (
 	"syscall"
 
 	"github.com/sirupsen/logrus"
-	"github.com/vpp-calico/vpp-calico/cni"
-	"github.com/vpp-calico/vpp-calico/config"
-	"github.com/vpp-calico/vpp-calico/routing"
-	"github.com/vpp-calico/vpp-calico/services"
-	"github.com/vpp-calico/vpp-calico/vpp_client"
+	"github.com/calico-vpp/calico-vpp/cni"
+	"github.com/calico-vpp/calico-vpp/config"
+	"github.com/calico-vpp/calico-vpp/routing"
+	"github.com/calico-vpp/calico-vpp/services"
+	"github.com/calico-vpp/calico-vpp/vpp_client"
 )
 
 func main() {

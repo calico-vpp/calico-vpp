@@ -1,4 +1,4 @@
-module github.com/vpp-calico/vpp-calico
+module github.com/calico-vpp/calico-vpp
 
 go 1.12
 

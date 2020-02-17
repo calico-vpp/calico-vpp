@@ -22,18 +22,18 @@ import (
 	"net"
 	"os"
 
-	vppip "github.com/vpp-calico/vpp-calico/vpp-1908-api/ip"
-	"github.com/vpp-calico/vpp-calico/vpp_client"
+	vppip "github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
+	"github.com/calico-vpp/calico-vpp/vpp_client"
 
 	"github.com/containernetworking/plugins/pkg/ip"
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
-	pb "github.com/vpp-calico/vpp-calico/cni/proto"
-	"github.com/vpp-calico/vpp-calico/config"
-	"github.com/vpp-calico/vpp-calico/routing"
-	"github.com/vpp-calico/vpp-calico/services"
+	pb "github.com/calico-vpp/calico-vpp/cni/proto"
+	"github.com/calico-vpp/calico-vpp/config"
+	"github.com/calico-vpp/calico-vpp/routing"
+	"github.com/calico-vpp/calico-vpp/services"
 	"golang.org/x/sys/unix"
 )
 
