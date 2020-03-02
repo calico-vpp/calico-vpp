@@ -54,6 +54,8 @@ const (
 	RTPROT_GOBGP = 0x11
 
 	prefixWatchInterval = 5 * time.Second
+
+	mainInterfaceSwIfIndex = 1
 )
 
 var (
@@ -444,14 +446,14 @@ func (s *Server) getNexthop(path *bgpapi.Path) string {
 // injectRoute is a helper function to inject BGP routes to VPP
 // TODO: multipath support
 func (s *Server) injectRoute(path *bgpapi.Path) error {
-	nexthopAddr := s.getNexthop(path)
-	nexthop := net.ParseIP(nexthopAddr)
-	if nexthop == nil {
+	var dst net.IPNet
+	ipAddrPrefixNlri := &bgpapi.IPAddressPrefix{}
+	isV4 := false
+	otherNodeIP := net.ParseIP(s.getNexthop(path))
+	if otherNodeIP == nil {
 		return fmt.Errorf("Cannot determine path nexthop: %+v", path)
 	}
-	ipAddrPrefixNlri := &bgpapi.IPAddressPrefix{}
-	var dst net.IPNet
-	isV4 := false
+
 	if err := ptypes.UnmarshalAny(path.Nlri, ipAddrPrefixNlri); err == nil {
 		dst.IP = net.ParseIP(ipAddrPrefixNlri.Prefix)
 		if dst.IP == nil {
@@ -466,36 +468,7 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 		return fmt.Errorf("Cannot handle Nlri: %+v", path.Nlri)
 	}
 
-	ipip := false
-	if isV4 {
-		if p := s.ipam.match(dst); p != nil {
-			ipip = p.Spec.IPIPMode != calicov3.IPIPModeNever
-
-			node, err := s.clientv3.Nodes().Get(context.Background(), s.nodeName, options.GetOptions{}) // TODO cache, we only do this to get the address subnet
-			if err != nil {
-				return errors.Wrap(err, "error getting node config")
-			}
-			_, ipNet, err := net.ParseCIDR(node.Spec.BGP.IPv4Address)
-			if err != nil {
-				return errors.Wrapf(err, "error parsing node IPv4 network: %s", node.Spec.BGP.IPv4Address)
-			}
-
-			if p.Spec.IPIPMode == calicov3.IPIPModeCrossSubnet && !isCrossSubnet(nexthop, *ipNet) {
-				ipip = false
-			}
-			if ipip {
-				s.l.Fatalf("ipip not supported at this time")
-			}
-		}
-		// TODO: if !IsWithdraw, we'd ignore that
-	}
-
-	if path.IsWithdraw {
-		s.l.Debugf("removing route %s from VPP", dst.String())
-		return errors.Wrap(s.vpp.DelRoute(isV4, dst, nexthop, vpp_client.INTERFACE_ANY), "error deleting route")
-	}
-	s.l.Printf("adding route %s to VPP", dst.String())
-	return errors.Wrap(s.vpp.ReplaceRoute(isV4, dst, nexthop, vpp_client.INTERFACE_ANY), "error replacing route")
+	return s.AddIPConnectivity(dst, otherNodeIP, isV4, path.IsWithdraw)
 }
 
 // watchBGPPath watches BGP routes from other peers and inject them into
@@ -524,7 +497,7 @@ func (s *Server) watchBGPPath() error {
 					return
 				}
 				if err := s.injectRoute(path); err != nil {
-					fmt.Errorf("cannot inject route: %v", err)
+					s.l.Errorf("cannot inject route: %v", err)
 				}
 			},
 		)

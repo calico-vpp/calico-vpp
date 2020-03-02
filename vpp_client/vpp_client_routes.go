@@ -144,9 +144,11 @@ func (v *VppInterface) addDelRoute(v4 bool, dst net.IPNet, gw net.IP, swIfIndex 
 			},
 			Len: uint8(prefixLen),
 		}
-		copy(ip[:], gw.To4())
 		route.Paths[0].Proto = vppip.FIB_API_PATH_NH_PROTO_IP4
-		route.Paths[0].Nh.Address = vppip.AddressUnionIP4(ip)
+		if gw != nil {
+			copy(ip[:], gw.To4())
+			route.Paths[0].Nh.Address = vppip.AddressUnionIP4(ip)
+		}
 	} else {
 		ip := [16]uint8{}
 		copy(ip[:], dst.IP.To16())
@@ -157,9 +159,11 @@ func (v *VppInterface) addDelRoute(v4 bool, dst net.IPNet, gw net.IP, swIfIndex 
 			},
 			Len: uint8(prefixLen),
 		}
-		copy(ip[:], gw.To16())
 		route.Paths[0].Proto = vppip.FIB_API_PATH_NH_PROTO_IP6
-		route.Paths[0].Nh.Address = vppip.AddressUnionIP6(ip)
+		if gw != nil {
+			copy(ip[:], gw.To16())
+			route.Paths[0].Nh.Address = vppip.AddressUnionIP6(ip)
+		}
 	}
 
 	request := &vppip.IPRouteAddDel{

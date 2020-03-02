@@ -254,3 +254,29 @@ func (v *VppInterface) DelTap(swIfIndex uint32) error {
 	}
 	return nil
 }
+
+func (v *VppInterface) interfaceSetUnnumbered(unnumberedSwIfIndex uint32, swIfIndex uint32, isAdd uint8) error {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+
+	// Set interface down
+	request := &interfaces.SwInterfaceSetUnnumbered{
+		SwIfIndex:   swIfIndex,
+		UnnumberedSwIfIndex:   unnumberedSwIfIndex,
+		IsAdd: isAdd,
+	}
+	response := &interfaces.SwInterfaceSetUnnumberedReply{}
+	err := v.ch.SendRequest(request).ReceiveReply(response)
+	if err != nil {
+		return errors.Wrapf(err, "setting interface unnumbered failed %d -> %d", unnumberedSwIfIndex, swIfIndex)
+	}
+	return nil
+}
+
+func (v *VppInterface) InterfaceSetUnnumbered(unnumberedSwIfIndex uint32, swIfIndex uint32) error {
+	return v.interfaceSetUnnumbered(unnumberedSwIfIndex, swIfIndex, 1)
+}
+
+func (v *VppInterface) InterfaceUnsetUnnumbered(unnumberedSwIfIndex uint32, swIfIndex uint32) error {
+	return v.interfaceSetUnnumbered(unnumberedSwIfIndex, swIfIndex, 0)
+}
