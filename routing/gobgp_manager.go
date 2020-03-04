@@ -54,8 +54,6 @@ const (
 	RTPROT_GOBGP = 0x11
 
 	prefixWatchInterval = 5 * time.Second
-
-	mainInterfaceSwIfIndex = 1
 )
 
 var (

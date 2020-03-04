@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/pkg/errors"
 	calicov3 "github.com/projectcalico/libcalico-go/lib/apis/v3"
 	"github.com/projectcalico/libcalico-go/lib/options"
@@ -33,11 +34,11 @@ var (
 )
 
 type NodeTunnels struct {
-	IpipIfs   map[string]uint32
+	IpipIfs map[string]uint32
 }
 
 func (s *Server) getNodeIPNet() (ip net.IP, ipNet *net.IPNet, err error) {
-	 // TODO cache, we only do this to get the address subnet
+	// TODO cache, we only do this to get the address subnet
 	node, err := s.clientv3.Nodes().Get(context.Background(), s.nodeName, options.GetOptions{})
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "error getting node config")
@@ -49,7 +50,7 @@ func (s *Server) getNodeIPNet() (ip net.IP, ipNet *net.IPNet, err error) {
 	return ip, ipNet, nil
 }
 
-func (s *Server) needIpipTunnel (dst net.IPNet, otherNodeIP net.IP, isV4 bool) (ipip bool, err error) {
+func (s *Server) needIpipTunnel(dst net.IPNet, otherNodeIP net.IP, isV4 bool) (ipip bool, err error) {
 	ipPool := s.ipam.match(dst)
 	if ipPool == nil {
 		return false, nil
@@ -75,7 +76,7 @@ func (s *Server) needIpipTunnel (dst net.IPNet, otherNodeIP net.IP, isV4 bool) (
 func (s *Server) addIpipConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool) error {
 	if _, found := tunnelStates[s.nodeName]; !found {
 		tunnelStates[s.nodeName] = &NodeTunnels{
-			IpipIfs:   make(map[string]uint32),
+			IpipIfs: make(map[string]uint32),
 		}
 	}
 	tunnelState := tunnelStates[s.nodeName]
@@ -91,7 +92,7 @@ func (s *Server) addIpipConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 boo
 		if err != nil {
 			return errors.Wrapf(err, "Error adding ipip tunnel %s -> %s", nodeIp.String(), otherNodeIP.String())
 		}
-		err = s.vpp.InterfaceSetUnnumbered(swIfIndex, mainInterfaceSwIfIndex) // TODO
+		err = s.vpp.InterfaceSetUnnumbered(swIfIndex, config.DataInterfaceSwIfIndex)
 		if err != nil {
 			// TODO : delete tunnel
 			return errors.Wrapf(err, "Error seting ipip tunnel unnumbered")
@@ -101,6 +102,12 @@ func (s *Server) addIpipConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 boo
 		if err != nil {
 			// TODO : delete tunnel
 			return errors.Wrapf(err, "Error setting ipip interface up")
+		}
+
+		err = s.vpp.AddNat44OutsideInterface(swIfIndex)
+		if err != nil {
+			// TODO : delete tunnel
+			return errors.Wrapf(err, "Error setting ipip interface out for nat44")
 		}
 		tunnelState.IpipIfs[otherNodeIP.String()] = swIfIndex
 	}
@@ -127,18 +134,17 @@ func (s *Server) delIpipConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 boo
 	return nil
 }
 
-func (s *Server) addFlatIPConnectivity (dst net.IPNet, otherNodeIP net.IP, isV4 bool) error {
+func (s *Server) addFlatIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool) error {
 	s.l.Printf("adding route %s to VPP", dst.String())
 	return errors.Wrap(s.vpp.ReplaceRoute(isV4, dst, otherNodeIP, vpp_client.INTERFACE_ANY), "error replacing route")
 }
 
-func (s *Server) delFlatIPConnectivity (dst net.IPNet, otherNodeIP net.IP, isV4 bool) error {
+func (s *Server) delFlatIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool) error {
 	s.l.Debugf("removing route %s from VPP", dst.String())
 	return errors.Wrap(s.vpp.DelRoute(isV4, dst, otherNodeIP, vpp_client.INTERFACE_ANY), "error deleting route")
 }
 
-
-func (s *Server) AddIPConnectivity (dst net.IPNet, otherNodeIP net.IP, isV4 bool, IsWithdraw bool) error {
+func (s *Server) AddIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool, IsWithdraw bool) error {
 	ipip, err := s.needIpipTunnel(dst, otherNodeIP, isV4)
 	if err != nil {
 		return errors.Wrapf(err, "error checking for ipip tunnel")
@@ -152,11 +158,9 @@ func (s *Server) AddIPConnectivity (dst net.IPNet, otherNodeIP net.IP, isV4 bool
 		}
 	}
 
-    // FLAT IP
 	if IsWithdraw {
-		return s.delFlatIPConnectivity (dst, otherNodeIP, isV4)
+		return s.delFlatIPConnectivity(dst, otherNodeIP, isV4)
 	} else {
-		return s.addFlatIPConnectivity (dst, otherNodeIP, isV4)
+		return s.addFlatIPConnectivity(dst, otherNodeIP, isV4)
 	}
 }
-
