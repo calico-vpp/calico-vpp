@@ -19,11 +19,11 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/pkg/errors"
 	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/calico-vpp/vpp-1908-api/interfaces"
 	vppip "github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
 	"github.com/calico-vpp/calico-vpp/vpp-1908-api/tapv2"
+	"github.com/pkg/errors"
 )
 
 const (
@@ -138,36 +138,39 @@ func (v *VppInterface) SearchInterfaceWithTag(tag string) (err error, swIfIndex 
 	v.lock.Lock()
 	defer v.lock.Unlock()
 
-	request := &interfaces.SwInterfaceDump{
-		//NameFilterValid: true,
-		//NameFilter:      "tap",
-	}
-	response := &interfaces.SwInterfaceDetails{}
+	swIfIndex = INVALID_INDEX
+	request := &interfaces.SwInterfaceDump{}
 	stream := v.ch.SendMultiRequest(request)
 	for {
+		response := &interfaces.SwInterfaceDetails{}
 		stop, err := stream.ReceiveReply(response)
 		if err != nil {
 			v.log.Errorf("error listing VPP interfaces: %v", err)
-			return err, ^uint32(0)
+			return err, INVALID_INDEX
 		}
 		if stop {
-			v.log.Errorf("error: interface to delete not found")
-			return fmt.Errorf("VPP Error: interface to delete not found"), ^uint32(0)
+			break
 		}
 		intfTag := string(bytes.Trim([]byte(response.Tag), "\x00"))
 		v.log.Debugf("found interface %d, tag: %s (len %d)", response.SwIfIndex, intfTag, len(intfTag))
 		if intfTag == tag {
-			return nil, response.SwIfIndex
+			swIfIndex = response.SwIfIndex
 		}
 	}
+	if swIfIndex == INVALID_INDEX {
+		v.log.Errorf("Interface with tag %s not found", tag)
+		return errors.New("Interface not found"), INVALID_INDEX
+	}
+	return nil, swIfIndex
 }
 
 func (v *VppInterface) SearchInterfaceWithName(name string) (err error, swIfIndex uint32) {
 	v.lock.Lock()
 	defer v.lock.Unlock()
 
+	swIfIndex = INVALID_INDEX
 	request := &interfaces.SwInterfaceDump{
-		SwIfIndex: interfaces.InterfaceIndex(^uint32(0)),
+		SwIfIndex: interfaces.InterfaceIndex(INVALID_INDEX),
 		// TODO: filter by name with NameFilter
 	}
 	reqCtx := v.ch.SendMultiRequest(request)
@@ -176,7 +179,7 @@ func (v *VppInterface) SearchInterfaceWithName(name string) (err error, swIfInde
 		stop, err := reqCtx.ReceiveReply(response)
 		if err != nil {
 			v.log.Errorf("SwInterfaceDump failed: %v", err)
-			return err, 0
+			return err, INVALID_INDEX
 		}
 		if stop {
 			break
@@ -184,12 +187,14 @@ func (v *VppInterface) SearchInterfaceWithName(name string) (err error, swIfInde
 		interfaceName := string(bytes.Trim([]byte(response.InterfaceName), "\x00"))
 		v.log.Debugf("Found interface: %s", interfaceName)
 		if interfaceName == name {
-			return nil, response.SwIfIndex
+			swIfIndex = response.SwIfIndex
 		}
-
 	}
-	v.log.Errorf("Interface %s not found", name)
-	return errors.New("Interface not found"), 0
+	if swIfIndex == INVALID_INDEX {
+		v.log.Errorf("Interface %s not found", name)
+		return errors.New("Interface not found"), INVALID_INDEX
+	}
+	return nil, swIfIndex
 }
 
 func (v *VppInterface) interfaceAdminUpDown(swIfIndex uint32, updown uint8) error {
@@ -261,9 +266,9 @@ func (v *VppInterface) interfaceSetUnnumbered(unnumberedSwIfIndex uint32, swIfIn
 
 	// Set interface down
 	request := &interfaces.SwInterfaceSetUnnumbered{
-		SwIfIndex:   swIfIndex,
-		UnnumberedSwIfIndex:   unnumberedSwIfIndex,
-		IsAdd: isAdd,
+		SwIfIndex:           swIfIndex,
+		UnnumberedSwIfIndex: unnumberedSwIfIndex,
+		IsAdd:               isAdd,
 	}
 	response := &interfaces.SwInterfaceSetUnnumberedReply{}
 	err := v.ch.SendRequest(request).ReceiveReply(response)
