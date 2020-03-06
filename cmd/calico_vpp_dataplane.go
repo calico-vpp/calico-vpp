@@ -20,12 +20,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/sirupsen/logrus"
 	"github.com/calico-vpp/calico-vpp/cni"
 	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/calico-vpp/routing"
 	"github.com/calico-vpp/calico-vpp/services"
 	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
