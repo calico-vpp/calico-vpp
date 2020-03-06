@@ -16,275 +16,47 @@
 package services
 
 import (
-	"fmt"
 	"net"
+	"os"
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 	"github.com/calico-vpp/calico-vpp/config"
-	vppip "github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
 	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/pkg/errors"
+	calicocliv3 "github.com/projectcalico/libcalico-go/lib/clientv3"
+	"github.com/projectcalico/libcalico-go/lib/options"
+	"github.com/sirupsen/logrus"
+	"golang.org/x/net/context"
+	"gopkg.in/tomb.v2"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 )
 
 var (
-	endpointStore cache.Store
-	serviceStore  cache.Store
-	endpointStop  chan struct{}
-	serviceStop   chan struct{}
-	log           *logrus.Entry
-	vpp           *vpp_client.VppInterface
+	server *Server
 )
 
-func GracefulStop() {
-	close(endpointStop)
-	close(serviceStop)
+type Server struct {
+	t                tomb.Tomb
+	endpointStore    cache.Store
+	serviceStore     cache.Store
+	serviceInformer  cache.Controller
+	endpointInformer cache.Controller
+	clientv3         calicocliv3.Interface
+	nodeName         string
+	nodeIp           net.IP
+	nodeIpNet        *net.IPNet
+	lock             sync.Mutex
+	log              *logrus.Entry
+	vpp              *vpp_client.VppInterface
 }
 
-func AnnounceContainerInterface(v *vpp_client.VppInterface, swIfIndex uint32) error {
-	err := v.AddNat44InsideInterface(swIfIndex)
-	if err != nil {
-		return errors.Wrapf(err, "Error adding nat44 inside if %d", swIfIndex)
-	}
-	return v.AddNat44OutsideInterface(swIfIndex)
-}
-
-func WithdrawContainerInterface(v *vpp_client.VppInterface, swIfIndex uint32) error {
-	return v.DelNat44OutsideInterface(swIfIndex)
-}
-
-func getTargetPort(sPort v1.ServicePort) (int32, error) {
-	tp := sPort.TargetPort
-	if tp.Type == intstr.Int {
-		if tp.IntVal == 0 {
-			// Unset targetport
-			return sPort.Port, nil
-		} else {
-			return tp.IntVal, nil
-		}
-	} else {
-		return 0, fmt.Errorf("Unsupported string type for service port: %+v", sPort)
-	}
-}
-
-func getServicePortProto(proto v1.Protocol) vppip.IPProto {
-	switch proto {
-	case v1.ProtocolUDP:
-		return vppip.IP_API_PROTO_UDP
-	case v1.ProtocolSCTP:
-		return vppip.IP_API_PROTO_SCTP
-	case v1.ProtocolTCP:
-		return vppip.IP_API_PROTO_TCP
-	default:
-		return vppip.IP_API_PROTO_TCP
-	}
-}
-
-func doServiceNat(s *v1.Service, ep *v1.Endpoints, isAdd bool) (err error) {
-	if s == nil {
-		return fmt.Errorf("nil service, cannot process")
-	}
-	if ep == nil {
-		return fmt.Errorf("nil endpoint, cannot process")
-	}
-
-	if s.Spec.Type != v1.ServiceTypeClusterIP {
-		return nil
-	}
-	if net.ParseIP(s.Spec.ClusterIP) == nil {
-		log.Debugf("Service %s/%s has no IP, skipping", s.Namespace, s.Name)
-		return nil
-	}
-
-	if isAdd {
-		err = vpp.AddNat44Address(s.Spec.ClusterIP)
-		if err != nil {
-			return errors.Wrap(err, "error adding nat44 address")
-		}
-		err = vpp.AddNat44OutsideInterface(config.DataInterfaceSwIfIndex)
-		if err != nil {
-			return errors.Wrap(err, "error adding nat44 physical interface")
-		}
-	}
-
-	// For each port, build list of backends and add to VPP
-	for _, servicePort := range s.Spec.Ports {
-		var IPs []string
-		for _, set := range ep.Subsets {
-			// Check if this subset exposes the port we're interested in
-			for _, port := range set.Ports {
-				if servicePort.Name == port.Name {
-					for _, addr := range set.Addresses {
-						IPs = append(IPs, addr.IP)
-					}
-					break
-				}
-			}
-		}
-		log.Debugf("%d backends found for service %s/%s port %s", len(IPs), s.Namespace, s.Name, servicePort.Name)
-		if len(IPs) == 0 {
-			continue
-		}
-		targetPort, err := getTargetPort(servicePort)
-		if err != nil {
-			log.Warnf("Error determinig target port: %v", err)
-			continue
-		}
-		if isAdd {
-			err = vpp.AddNat44LB(s.Spec.ClusterIP, getServicePortProto(servicePort.Protocol), servicePort.Port, IPs, targetPort)
-			if err != nil {
-				return errors.Wrap(err, "error adding nat44 lb config")
-			}
-		} else {
-			err = vpp.DelNat44LB(s.Spec.ClusterIP, getServicePortProto(servicePort.Protocol), servicePort.Port, len(IPs))
-			if err != nil {
-				return errors.Wrap(err, "error deleting nat44 lb config")
-			}
-		}
-	}
-
-	if !isAdd {
-		err = vpp.DelNat44Address(s.Spec.ClusterIP)
-		if err != nil {
-			return errors.Wrap(err, "error deleting nat44 address")
-		}
-	}
-	return nil
-}
-
-func addServiceNat(s *v1.Service, ep *v1.Endpoints) error {
-	return doServiceNat(s, ep, true)
-}
-
-func delServiceNat(s *v1.Service, ep *v1.Endpoints) error {
-	return doServiceNat(s, ep, false)
-}
-
-func findMatchingService(ep *v1.Endpoints) *v1.Service {
-	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(ep)
-	if err != nil {
-		log.Errorf("Error getting endpoint %+v key: %v", ep, err)
-		return nil
-	}
-	s, found, err := serviceStore.GetByKey(key)
-	if err != nil {
-		log.Errorf("Error getting service %s: %v", key, err)
-		return nil
-	}
-	if !found {
-		log.Debugf("Service %s not found", key)
-		return nil
-	}
-	return s.(*v1.Service)
-}
-
-func findMatchingEndpoint(s *v1.Service) *v1.Endpoints {
-	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(s)
-	if err != nil {
-		log.Errorf("Error getting service %+v key: %v", s, err)
-		return nil
-	}
-	ep, found, err := endpointStore.GetByKey(key)
-	if err != nil {
-		log.Errorf("Error getting endpoint %s: %v", key, err)
-		return nil
-	}
-	if !found {
-		log.Debugf("Endpoint %s not found", key)
-		return nil
-	}
-	return ep.(*v1.Endpoints)
-}
-
-func endpointAdded(ep *v1.Endpoints) error {
-	log.Debugf("New endpoint: %s/%s", ep.Namespace, ep.Name)
-	s := findMatchingService(ep)
-	if s == nil {
-		// Wait for matching service to be added
-		return nil
-	}
-	log.Debugf("Found matching service")
-	return addServiceNat(s, ep)
-}
-
-func endpointModified(ep *v1.Endpoints, old *v1.Endpoints) error {
-	log.Debugf("Endpoint %s/%s modified", ep.Namespace, ep.Name)
-	s := findMatchingService(ep)
-	if s == nil {
-		// Wait for matching endpoint to be added
-		return nil
-	}
-	log.Debugf("Found matching service")
-	err := delServiceNat(s, old)
-	if err != nil {
-		log.Errorf("Deleting NAT config failed, trying to re-add anyway")
-	}
-	return addServiceNat(s, ep)
-}
-
-func endpointRemoved(ep *v1.Endpoints) error {
-	log.Debugf("Deleted endpoint: %s/%s", ep.Namespace, ep.Name)
-	s := findMatchingService(ep)
-	if s == nil {
-		// Matching service already removed
-		return nil
-	}
-	log.Debugf("Found matching service")
-	return delServiceNat(s, ep)
-}
-
-func serviceAdded(s *v1.Service) error {
-	log.Debugf("New service: %s/%s", s.Namespace, s.Name)
-	ep := findMatchingEndpoint(s)
-	if ep == nil {
-		// Wait for matching endpoint to be added
-		return nil
-	}
-	log.Debugf("Found matching endpoint")
-	return addServiceNat(s, ep)
-}
-
-func serviceModified(s *v1.Service, old *v1.Service) error {
-	log.Debugf("Service %s/%s modified", s.Namespace, s.Name)
-	ep := findMatchingEndpoint(s)
-	if ep == nil {
-		// Wait for matching endpoint to be added
-		return nil
-	}
-	log.Debugf("Found matching endpoint")
-	err := delServiceNat(old, ep)
-	if err != nil {
-		log.Errorf("Deleting NAT config failed, trying to re-add anyway")
-	}
-	return addServiceNat(s, ep)
-}
-
-func serviceRemoved(s *v1.Service) error {
-	log.Debugf("Deleted service: %s/%s", s.Namespace, s.Name)
-	ep := findMatchingEndpoint(s)
-	if ep == nil {
-		// Matching endpoint already removed
-		return nil
-	}
-	log.Debugf("Found matching endpoint")
-	return delServiceNat(s, ep)
-}
-
-func Run(v *vpp_client.VppInterface, l *logrus.Entry) {
-	var err error
-	var endpointInformer, serviceInformer cache.Controller
-	var lock sync.Mutex
-
-	log = l
-	vpp = v
-
+func NewServer(vpp *vpp_client.VppInterface, log *logrus.Entry) (*Server, error) {
+	nodeName := os.Getenv(config.NODENAME)
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		panic(err.Error())
@@ -293,85 +65,237 @@ func Run(v *vpp_client.VppInterface, l *logrus.Entry) {
 	if err != nil {
 		panic(err.Error())
 	}
-
-	err = vpp.EnableNatForwarding()
+	calicoCliV3, err := calicocliv3.NewFromEnv()
 	if err != nil {
-		log.Errorf("cannot enable VPP NAT44 forwarding: %v", err)
-		return
+		panic(err.Error())
 	}
-
+	server := Server{
+		clientv3: calicoCliV3,
+		nodeName: nodeName,
+		vpp:      vpp,
+		log:      log,
+	}
 	serviceListWatch := cache.NewListWatchFromClient(client.CoreV1().RESTClient(),
 		"services", "", fields.Everything())
-	serviceStore, serviceInformer = cache.NewInformer(
+	serviceStore, serviceInformer := cache.NewInformer(
 		serviceListWatch,
 		&v1.Service{},
 		60*time.Second,
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				lock.Lock()
-				defer lock.Unlock()
-				err := serviceAdded(obj.(*v1.Service))
+				server.lock.Lock()
+				defer server.lock.Unlock()
+				err := server.serviceAdded(obj.(*v1.Service))
 				if err != nil {
-					l.Errorf("serviceAdded errored: %s", err)
+					log.Errorf("serviceAdded errored: %s", err)
 				}
 			},
 			UpdateFunc: func(old interface{}, obj interface{}) {
-				lock.Lock()
-				defer lock.Unlock()
-				err := serviceModified(obj.(*v1.Service), old.(*v1.Service))
+				server.lock.Lock()
+				defer server.lock.Unlock()
+				err := server.serviceModified(obj.(*v1.Service), old.(*v1.Service))
 				if err != nil {
-					l.Errorf("serviceModified errored: %s", err)
+					log.Errorf("serviceModified errored: %s", err)
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				lock.Lock()
-				defer lock.Unlock()
-				err := serviceRemoved(obj.(*v1.Service))
+				server.lock.Lock()
+				defer server.lock.Unlock()
+				err := server.serviceRemoved(obj.(*v1.Service))
 				if err != nil {
-					l.Errorf("serviceRemoved errored: %s", err)
+					log.Errorf("serviceRemoved errored: %s", err)
 				}
 			},
 		})
 
 	endpointListWatch := cache.NewListWatchFromClient(client.CoreV1().RESTClient(),
 		"endpoints", "", fields.Everything())
-	endpointStore, endpointInformer = cache.NewInformer(
+	endpointStore, endpointInformer := cache.NewInformer(
 		endpointListWatch,
 		&v1.Endpoints{},
 		60*time.Second,
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
-				lock.Lock()
-				defer lock.Unlock()
-				err := endpointAdded(obj.(*v1.Endpoints))
+				server.lock.Lock()
+				defer server.lock.Unlock()
+				err := server.endpointAdded(obj.(*v1.Endpoints))
 				if err != nil {
-					l.Errorf("endpointAdded errored: %s", err)
+					log.Errorf("endpointAdded errored: %s", err)
 				}
 			},
 			UpdateFunc: func(old interface{}, obj interface{}) {
-				lock.Lock()
-				defer lock.Unlock()
-				err := endpointModified(obj.(*v1.Endpoints), old.(*v1.Endpoints))
+				server.lock.Lock()
+				defer server.lock.Unlock()
+				err := server.endpointModified(obj.(*v1.Endpoints), old.(*v1.Endpoints))
 				if err != nil {
-					l.Errorf("endpointModified errored: %s", err)
+					log.Errorf("endpointModified errored: %s", err)
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				lock.Lock()
-				defer lock.Unlock()
-				err := endpointRemoved(obj.(*v1.Endpoints))
+				server.lock.Lock()
+				defer server.lock.Unlock()
+				err := server.endpointRemoved(obj.(*v1.Endpoints))
 				if err != nil {
-					l.Errorf("endpointRemoved errored: %s", err)
+					log.Errorf("endpointRemoved errored: %s", err)
 				}
 			},
 		})
 
-	serviceStop = make(chan struct{})
-	go serviceInformer.Run(serviceStop)
+	server.endpointStore = endpointStore
+	server.serviceStore = serviceStore
+	server.serviceInformer = serviceInformer
+	server.endpointInformer = endpointInformer
+	return &server, nil
+}
 
-	endpointStop = make(chan struct{})
-	go endpointInformer.Run(endpointStop)
+func (s *Server) getNodeIP() (ip net.IP, ipNet *net.IPNet, err error) {
+	if s.nodeIp == nil {
+		node, err := s.clientv3.Nodes().Get(context.Background(), s.nodeName, options.GetOptions{})
+		if err != nil {
+			return nil, nil, errors.Wrap(err, "error getting node config")
+		}
+		ip, ipNet, err = net.ParseCIDR(node.Spec.BGP.IPv4Address)
+		if err != nil {
+			return nil, nil, errors.Wrapf(err, "error parsing node IPv4 network: %s", node.Spec.BGP.IPv4Address)
+		}
+		s.nodeIp = ip
+		s.nodeIpNet = ipNet
+	}
+	return s.nodeIp, s.nodeIpNet, nil
+}
 
-	// Wait forever
-	select {}
+func (s *Server) findMatchingService(ep *v1.Endpoints) *v1.Service {
+	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(ep)
+	if err != nil {
+		s.log.Errorf("Error getting endpoint %+v key: %v", ep, err)
+		return nil
+	}
+	service, found, err := s.serviceStore.GetByKey(key)
+	if err != nil {
+		s.log.Errorf("Error getting service %s: %v", key, err)
+		return nil
+	}
+	if !found {
+		s.log.Debugf("Service %s not found", key)
+		return nil
+	}
+	return service.(*v1.Service)
+}
+
+func (s *Server) findMatchingEndpoint(service *v1.Service) *v1.Endpoints {
+	key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(service)
+	if err != nil {
+		s.log.Errorf("Error getting service %+v key: %v", service, err)
+		return nil
+	}
+	ep, found, err := s.endpointStore.GetByKey(key)
+	if err != nil {
+		s.log.Errorf("Error getting endpoint %s: %v", key, err)
+		return nil
+	}
+	if !found {
+		s.log.Debugf("Endpoint %s not found", key)
+		return nil
+	}
+	return ep.(*v1.Endpoints)
+}
+
+func (s *Server) endpointAdded(ep *v1.Endpoints) error {
+	s.log.Debugf("New endpoint: %s/%s", ep.Namespace, ep.Name)
+	service := s.findMatchingService(ep)
+	if service == nil {
+		// Wait for matching service to be added
+		return nil
+	}
+	s.log.Debugf("Found matching service")
+	return s.AddServiceNat(service, ep)
+}
+
+func (s *Server) endpointModified(ep *v1.Endpoints, old *v1.Endpoints) error {
+	s.log.Debugf("Endpoint %s/%s modified", ep.Namespace, ep.Name)
+	service := s.findMatchingService(ep)
+	if service == nil {
+		// Wait for matching endpoint to be added
+		return nil
+	}
+	s.log.Debugf("Found matching service")
+	err := s.DelServiceNat(service, old)
+	if err != nil {
+		s.log.Errorf("Deleting NAT config failed, trying to re-add anyway")
+	}
+	return s.AddServiceNat(service, ep)
+}
+
+func (s *Server) endpointRemoved(ep *v1.Endpoints) error {
+	s.log.Debugf("Deleted endpoint: %s/%s", ep.Namespace, ep.Name)
+	service := s.findMatchingService(ep)
+	if service == nil {
+		// Matching service already removed
+		return nil
+	}
+	s.log.Debugf("Found matching service")
+	return s.DelServiceNat(service, ep)
+}
+
+func (s *Server) serviceAdded(service *v1.Service) error {
+	s.log.Debugf("New service: %s/%s", service.Namespace, service.Name)
+	ep := s.findMatchingEndpoint(service)
+	if ep == nil {
+		// Wait for matching endpoint to be added
+		return nil
+	}
+	s.log.Debugf("Found matching endpoint")
+	return s.AddServiceNat(service, ep)
+}
+
+func (s *Server) serviceModified(service *v1.Service, old *v1.Service) error {
+	s.log.Debugf("Service %s/%s modified", service.Namespace, service.Name)
+	ep := s.findMatchingEndpoint(service)
+	if ep == nil {
+		// Wait for matching endpoint to be added
+		return nil
+	}
+	s.log.Debugf("Found matching endpoint")
+	err := s.DelServiceNat(old, ep)
+	if err != nil {
+		s.log.Errorf("Deleting NAT config failed, trying to re-add anyway")
+	}
+	return s.AddServiceNat(service, ep)
+}
+
+func (s *Server) serviceRemoved(service *v1.Service) error {
+	s.log.Debugf("Deleted service: %s/%s", service.Namespace, service.Name)
+	ep := s.findMatchingEndpoint(service)
+	if ep == nil {
+		// Matching endpoint already removed
+		return nil
+	}
+	s.log.Debugf("Found matching endpoint")
+	return s.DelServiceNat(service, ep)
+}
+
+func (s *Server) Serve() {
+	err := s.vpp.EnableNatForwarding()
+	if err != nil {
+		s.log.Errorf("cannot enable VPP NAT44 forwarding")
+		s.log.Fatal(err)
+	}
+
+	s.t.Go(func() error { s.serviceInformer.Run(s.t.Dying()); return nil })
+	s.t.Go(func() error { s.endpointInformer.Run(s.t.Dying()); return nil })
+	<-s.t.Dying()
+}
+
+func Run(vpp *vpp_client.VppInterface, log *logrus.Entry) {
+	_server, err := NewServer(vpp, log)
+	if err != nil {
+		log.Errorf("failed to create new server")
+		log.Fatal(err)
+	}
+	server = _server
+	server.Serve()
+}
+
+func GracefulStop() {
+	server.t.Kill(errors.Errorf("GracefulStop"))
 }

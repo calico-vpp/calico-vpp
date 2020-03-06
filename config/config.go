@@ -16,6 +16,7 @@
 package config
 
 const (
+	NODENAME               = "NODENAME"
 	DataInterfaceSwIfIndex = uint32(1) // Assumption: the VPP config ensures this is true
 	CNIServerSocket        = "/var/run/calico/cni-server.sock"
 	VppAPISocket           = "/var/run/vpp/vpp-api.sock"

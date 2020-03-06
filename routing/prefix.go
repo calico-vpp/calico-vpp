@@ -19,6 +19,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/calico-vpp/calico-vpp/config"
 	bgpapi "github.com/osrg/gobgp/api"
 	"github.com/pkg/errors"
 	"github.com/projectcalico/libcalico-go/lib/backend/model"
@@ -91,7 +92,7 @@ func (s *Server) getAssignedPrefixes() ([]string, error) {
 	f := func(ipVersion int) error {
 		blockList, err := s.client.Backend.List(
 			context.Background(),
-			model.BlockAffinityListOptions{Host: os.Getenv(NODENAME), IPVersion: ipVersion},
+			model.BlockAffinityListOptions{Host: os.Getenv(config.NODENAME), IPVersion: ipVersion},
 			"",
 		)
 		if err != nil {
