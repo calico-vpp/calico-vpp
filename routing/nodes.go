@@ -29,6 +29,10 @@ import (
 	"github.com/projectcalico/libcalico-go/lib/watch"
 )
 
+var (
+	state = make(map[string]*node)
+)
+
 type node struct {
 	Spec      *calicov3.NodeSpec
 	SweepFlag bool
@@ -60,8 +64,6 @@ func (s *Server) watchNodes() error {
 	if err != nil {
 		return errors.Wrap(err, "error determining whether node mesh is enabled")
 	}
-	state := make(map[string]*node)
-
 	for {
 		// TODO: Get and watch only ourselves if there is no mesh
 		s.l.Info("Syncing nodes...")

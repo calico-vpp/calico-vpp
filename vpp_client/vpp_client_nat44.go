@@ -139,7 +139,7 @@ func (v *VppInterface) addDelNat44LBStaticMapping(
 	response := &nat.Nat44AddDelLbStaticMappingReply{}
 	request := &nat.Nat44AddDelLbStaticMapping{
 		IsAdd:        isAdd,
-		Flags:        nat.NAT_IS_NONE,
+		Flags:        nat.NAT_IS_SELF_TWICE_NAT | nat.NAT_IS_OUT2IN_ONLY,
 		ExternalAddr: parseIP4Address(extAddr),
 		ExternalPort: uint16(extPort),
 		Protocol:     uint8(proto),
@@ -186,7 +186,7 @@ func (v *VppInterface) addDelNat44StaticMapping(
 	response := &nat.Nat44AddDelStaticMappingReply{}
 	request := &nat.Nat44AddDelStaticMapping{
 		IsAdd:             isAdd,
-		Flags:             nat.NAT_IS_NONE,
+		Flags:             nat.NAT_IS_SELF_TWICE_NAT | nat.NAT_IS_OUT2IN_ONLY,
 		LocalIPAddress:    parseIP4Address(backendIP),
 		ExternalIPAddress: parseIP4Address(externalAddr),
 		Protocol:          uint8(serviceProto),

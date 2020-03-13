@@ -49,6 +49,10 @@ func GracefulStop() {
 }
 
 func AnnounceContainerInterface(v *vpp_client.VppInterface, swIfIndex uint32) error {
+	err := v.AddNat44InsideInterface(swIfIndex)
+	if err != nil {
+		return errors.Wrapf(err, "Error adding nat44 inside if %d", swIfIndex)
+	}
 	return v.AddNat44OutsideInterface(swIfIndex)
 }
 
@@ -104,7 +108,7 @@ func doServiceNat(s *v1.Service, ep *v1.Endpoints, isAdd bool) (err error) {
 		if err != nil {
 			return errors.Wrap(err, "error adding nat44 address")
 		}
-		err = vpp.AddNat44InsideInterface(config.DataInterfaceSwIfIndex)
+		err = vpp.AddNat44OutsideInterface(config.DataInterfaceSwIfIndex)
 		if err != nil {
 			return errors.Wrap(err, "error adding nat44 physical interface")
 		}
