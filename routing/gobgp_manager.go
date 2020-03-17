@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/golang/protobuf/ptypes"
 	"github.com/golang/protobuf/ptypes/any"
 	bgpapi "github.com/osrg/gobgp/api"
@@ -46,8 +47,6 @@ import (
 )
 
 const (
-	NODENAME = "NODENAME"
-
 	aggregatedPrefixSetName = "aggregated"
 	hostPrefixSetName       = "host"
 
@@ -87,7 +86,7 @@ type Server struct {
 }
 
 func NewServer(vpp *vpp_client.VppInterface, l *logrus.Entry) (*Server, error) {
-	nodeName := os.Getenv(NODENAME)
+	nodeName := os.Getenv(config.NODENAME)
 	calicoCli, err := calicocli.NewFromEnv()
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create calico v1 api client")
@@ -773,15 +772,15 @@ func Run(vpp *vpp_client.VppInterface, l *logrus.Entry) {
 		}
 	}
 
-	s, err := NewServer(vpp, l)
+	_server, err := NewServer(vpp, l)
 	if err != nil {
 		l.Errorf("failed to create new server")
 		l.Fatal(err)
 	}
-	server = s
+	server = _server
 	server.Serve()
 }
 
 func GracefulStop() {
-	// TODO
+	server.t.Kill(errors.Errorf("GracefulStop"))
 }

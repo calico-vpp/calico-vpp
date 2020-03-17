@@ -19,9 +19,9 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/pkg/errors"
 	"github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
 	"github.com/calico-vpp/calico-vpp/vpp-1908-api/nat"
+	"github.com/pkg/errors"
 )
 
 func parseIP4Address(address string) nat.IP4Address {
@@ -65,6 +65,33 @@ func (v *VppInterface) addDelNat44Address(isAdd bool, address string) (err error
 		return errors.Wrap(err, "Nat44 address add failed")
 	} else if response.Retval != 0 {
 		return fmt.Errorf("Nat44 address add failed with retval %d", response.Retval)
+	}
+	return nil
+}
+
+func (v *VppInterface) AddNat44InterfaceAddress(swIfIndex uint32, flags nat.NatConfigFlags) error {
+	return v.addDelNat44InterfaceAddress(true, swIfIndex, flags)
+}
+
+func (v *VppInterface) DelNat44InterfaceAddress(swIfIndex uint32, flags nat.NatConfigFlags) error {
+	return v.addDelNat44InterfaceAddress(false, swIfIndex, flags)
+}
+
+func (v *VppInterface) addDelNat44InterfaceAddress(isAdd bool, swIfIndex uint32, flags nat.NatConfigFlags) (err error) {
+	v.lock.Lock()
+	defer v.lock.Unlock()
+
+	response := &nat.Nat44AddDelInterfaceAddrReply{}
+	request := &nat.Nat44AddDelInterfaceAddr{
+		IsAdd:     isAdd,
+		SwIfIndex: nat.InterfaceIndex(swIfIndex),
+		Flags:     flags,
+	}
+	err = v.ch.SendRequest(request).ReceiveReply(response)
+	if err != nil {
+		return errors.Wrap(err, "Nat44 addDel interface address failed")
+	} else if response.Retval != 0 {
+		return fmt.Errorf("Nat44 addDel interface address failed: %d", response.Retval)
 	}
 	return nil
 }
