@@ -40,9 +40,11 @@ func main() {
 		return
 	}
 
-	go cni.Run(vpp, logger.WithFields(logrus.Fields{"component": "cni"}))
 	go routing.Run(vpp, logger.WithFields(logrus.Fields{"component": "routing"}))
+	<-routing.ServerRunning
+
 	go services.Run(vpp, logger.WithFields(logrus.Fields{"component": "services"}))
+	go cni.Run(vpp, logger.WithFields(logrus.Fields{"component": "cni"}))
 
 	<-signalChannel
 	logger.Infof("SIGINT received, exiting")
