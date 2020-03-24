@@ -20,10 +20,10 @@ import (
 	"net"
 	"syscall"
 
-	"github.com/sirupsen/logrus"
 	pb "github.com/calico-vpp/calico-vpp/cni/proto"
 	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 )
 

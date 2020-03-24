@@ -25,15 +25,15 @@ import (
 	vppip "github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
 	"github.com/calico-vpp/calico-vpp/vpp_client"
 
+	pb "github.com/calico-vpp/calico-vpp/cni/proto"
+	"github.com/calico-vpp/calico-vpp/config"
+	"github.com/calico-vpp/calico-vpp/routing"
+	"github.com/calico-vpp/calico-vpp/services"
 	"github.com/containernetworking/plugins/pkg/ip"
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
-	pb "github.com/calico-vpp/calico-vpp/cni/proto"
-	"github.com/calico-vpp/calico-vpp/config"
-	"github.com/calico-vpp/calico-vpp/routing"
-	"github.com/calico-vpp/calico-vpp/services"
 	"golang.org/x/sys/unix"
 )
 
@@ -345,6 +345,10 @@ func addVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 			Netns:         netns,
 		})
 		return "", "", fmt.Errorf("error adding vpp side routes for interface: %s, error: %s", tapTag, err)
+	}
+	err = v.InterfaceAdminUp(swIfIndex)
+	if err != nil {
+		return "", "", errors.Wrap(err, "error setting new tap up")
 	}
 
 	logger.Infof("tap setup complete")

@@ -19,8 +19,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/pkg/errors"
 	vppip "github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
+	"github.com/pkg/errors"
 )
 
 const (

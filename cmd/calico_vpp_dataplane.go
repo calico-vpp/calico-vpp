@@ -16,23 +16,44 @@
 package main
 
 import (
+	"io/ioutil"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/calico-vpp/calico-vpp/cni"
 	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/calico-vpp/routing"
 	"github.com/calico-vpp/calico-vpp/services"
 	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
+
+func waitForVppManager() error {
+	for i := 0; i < 20; i++ {
+		dat, err := ioutil.ReadFile(config.VppManagerStatusFile)
+		if err == nil && strings.TrimSpace(string(dat[:])) == "1" {
+			return nil
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return errors.Errorf("Vpp manager not ready after 20 tries")
+}
 
 func main() {
 	logger := logrus.New()
 	logger.SetLevel(logrus.DebugLevel)
 	signalChannel := make(chan os.Signal, 2)
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
+
+	err := waitForVppManager()
+	if err != nil {
+		logger.Errorf("Vpp Manager not started: %v", err)
+		return
+	}
 
 	vpp, err := vpp_client.NewVppInterface(config.VppAPISocket, logger.WithFields(logrus.Fields{"component": "vpp-api"}))
 	if err != nil {

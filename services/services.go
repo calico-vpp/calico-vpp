@@ -16,8 +16,11 @@
 package services
 
 import (
+	"io/ioutil"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,6 +56,21 @@ type Server struct {
 	lock             sync.Mutex
 	log              *logrus.Entry
 	vpp              *vpp_client.VppInterface
+	vppTapSwIfindex  uint32
+}
+
+func fetchVppTapSwifIndex() (swIfIndex uint32, err error) {
+	for i := 0; i < 20; i++ {
+		dat, err := ioutil.ReadFile(config.VppManagerTapIdxFile)
+		if err == nil {
+			idx, err := strconv.ParseInt(strings.TrimSpace(string(dat[:])), 10, 32)
+			if err == nil && idx != -1 {
+				return uint32(idx), nil
+			}
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return 0, errors.Errorf("Vpp-host tap not ready after 20 tries")
 }
 
 func NewServer(vpp *vpp_client.VppInterface, log *logrus.Entry) (*Server, error) {
@@ -69,11 +87,16 @@ func NewServer(vpp *vpp_client.VppInterface, log *logrus.Entry) (*Server, error)
 	if err != nil {
 		panic(err.Error())
 	}
+	swIfIndex, err := fetchVppTapSwifIndex()
+	if err != nil {
+		panic(err.Error())
+	}
 	server := Server{
-		clientv3: calicoCliV3,
-		nodeName: nodeName,
-		vpp:      vpp,
-		log:      log,
+		clientv3:        calicoCliV3,
+		nodeName:        nodeName,
+		vpp:             vpp,
+		log:             log,
+		vppTapSwIfindex: swIfIndex,
 	}
 	serviceListWatch := cache.NewListWatchFromClient(client.CoreV1().RESTClient(),
 		"services", "", fields.Everything())

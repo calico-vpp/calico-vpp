@@ -20,6 +20,8 @@ const (
 	DataInterfaceSwIfIndex = uint32(1) // Assumption: the VPP config ensures this is true
 	CNIServerSocket        = "/var/run/calico/cni-server.sock"
 	VppAPISocket           = "/var/run/vpp/vpp-api.sock"
+	VppManagerStatusFile   = "/var/run/vpp/vppmanagerstatus"
+	VppManagerTapIdxFile   = "/var/run/vpp/vppmanagertap0"
 )
 
 var (
