@@ -555,7 +555,7 @@ spec:
         # This container installs the CNI binaries
         # and CNI network config file on each node.
         - name: install-cni
-          image: calicovpp/cni:v3.9.1-1
+          image: calico/cni:latest
           command: ["/install-cni.sh"]
           env:
             # Name of the CNI config file to create.
@@ -690,7 +690,7 @@ spec:
             - name: vpp-rundir
               mountPath: /var/run/vpp
         - name: vpp
-          image: calicovpp/vpp:v3.9.1-13
+          image: calicovpp/vpp:latest
           securityContext:
             privileged: true
             capabilities:
