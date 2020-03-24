@@ -91,13 +91,15 @@ func (s *Server) addNat44NodePort(service *v1.Service, ep *v1.Endpoints) (err er
 	}
 	err = s.vpp.AddNat44OutsideInterface(config.DataInterfaceSwIfIndex)
 	if err != nil {
-		s.log.Errorf("Error adding nat44 physical interface")
-		// return errors.Wrap(err, "Error adding nat44 physical interface")
+		return errors.Wrap(err, "Error adding nat44 physical interface")
+	}
+	err = s.vpp.AddNat44OutsideInterface(s.vppTapSwIfindex)
+	if err != nil {
+		return errors.Wrap(err, "Error adding nat44 host-vpp tap interface")
 	}
 	err = s.vpp.AddNat44InterfaceAddress(config.DataInterfaceSwIfIndex, vppnat.NAT_IS_TWICE_NAT)
 	if err != nil {
-		s.log.Errorf("Error adding nat44 physical interface address")
-		// return errors.Wrap(err, "Error adding nat44 physical interface address")
+		return errors.Wrap(err, "Error adding nat44 physical interface address")
 	}
 	nodeIp, _, err := s.getNodeIP()
 	if err != nil {
@@ -169,7 +171,10 @@ func (s *Server) addNat44ClusterIP(service *v1.Service, ep *v1.Endpoints) (err e
 	if err != nil {
 		return errors.Wrap(err, "Error adding nat44 physical interface")
 	}
-
+	err = s.vpp.AddNat44OutsideInterface(s.vppTapSwIfindex)
+	if err != nil {
+		return errors.Wrap(err, "Error adding nat44 host-vpp tap interface")
+	}
 	// For each port, build list of backends and add to VPP
 	for _, servicePort := range service.Spec.Ports {
 		backendIPs := s.getServiceBackendIPs(&servicePort, ep)

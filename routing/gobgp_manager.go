@@ -59,6 +59,7 @@ var (
 	bgpFamilyUnicastIPv4 = bgpapi.Family{Afi: bgpapi.Family_AFI_IP, Safi: bgpapi.Family_SAFI_UNICAST}
 	bgpFamilyUnicastIPv6 = bgpapi.Family{Afi: bgpapi.Family_AFI_IP6, Safi: bgpapi.Family_SAFI_UNICAST}
 	server               *Server
+	ServerRunning        = make(chan int, 1)
 )
 
 type IpamCache interface {
@@ -184,6 +185,7 @@ func (s *Server) Serve() {
 	// watch routes added by kernel and announce to other BGP peers
 	s.t.Go(func() error { return fmt.Errorf("watchKernelRoute: %s", s.watchKernelRoute()) })
 
+	ServerRunning <- 1
 	<-s.t.Dying()
 
 	if err := s.cleanUpRoutes(); err != nil {
@@ -750,12 +752,12 @@ func (s *Server) withdrawLocalAddress(addr net.IPNet) error {
 }
 
 func AnnounceLocalAddress(addr net.IPNet) error {
-	// TODO proper sync to wait for server to be ready
+	// Sync done by routing.ServerRunning
 	return server.announceLocalAddress(addr)
 }
 
 func WithdrawLocalAddress(addr net.IPNet) error {
-	// TODO proper sync to wait for server to be ready
+	// Sync done by routing.ServerRunning
 	return server.withdrawLocalAddress(addr)
 }
 

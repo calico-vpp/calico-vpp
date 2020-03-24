@@ -19,11 +19,11 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/pkg/errors"
 	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/calico-vpp/vpp-1908-api/interfaces"
 	vppip "github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
 	"github.com/calico-vpp/calico-vpp/vpp-1908-api/tapv2"
+	"github.com/pkg/errors"
 )
 
 const (
@@ -69,12 +69,6 @@ func (v *VppInterface) CreateTap(
 	err = v.AddInterfaceAddress(response.SwIfIndex, vppIPAddress, 32)
 	if err != nil {
 		return INVALID_INDEX, vppIPAddress, errors.Wrap(err, "error adding address to new tap")
-	}
-
-	// Set interface up
-	err = v.InterfaceAdminUp(response.SwIfIndex)
-	if err != nil {
-		return INVALID_INDEX, vppIPAddress, errors.Wrap(err, "error setting new tap up")
 	}
 
 	// Add IPv6 neighbor entry if v6 is enabled
@@ -261,9 +255,9 @@ func (v *VppInterface) interfaceSetUnnumbered(unnumberedSwIfIndex uint32, swIfIn
 
 	// Set interface down
 	request := &interfaces.SwInterfaceSetUnnumbered{
-		SwIfIndex:   swIfIndex,
-		UnnumberedSwIfIndex:   unnumberedSwIfIndex,
-		IsAdd: isAdd,
+		SwIfIndex:           swIfIndex,
+		UnnumberedSwIfIndex: unnumberedSwIfIndex,
+		IsAdd:               isAdd,
 	}
 	response := &interfaces.SwInterfaceSetUnnumberedReply{}
 	err := v.ch.SendRequest(request).ReceiveReply(response)
