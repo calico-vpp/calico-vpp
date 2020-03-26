@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/calico-vpp/calico-vpp/config"
-	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/calico-vpp/vpplink"
 	"github.com/pkg/errors"
 	calicocliv3 "github.com/projectcalico/libcalico-go/lib/clientv3"
 	"github.com/projectcalico/libcalico-go/lib/options"
@@ -55,7 +55,7 @@ type Server struct {
 	nodeIpNet        *net.IPNet
 	lock             sync.Mutex
 	log              *logrus.Entry
-	vpp              *vpp_client.VppInterface
+	vpp              *vpplink.VppLink
 	vppTapSwIfindex  uint32
 }
 
@@ -73,7 +73,7 @@ func fetchVppTapSwifIndex() (swIfIndex uint32, err error) {
 	return 0, errors.Errorf("Vpp-host tap not ready after 20 tries")
 }
 
-func NewServer(vpp *vpp_client.VppInterface, log *logrus.Entry) (*Server, error) {
+func NewServer(vpp *vpplink.VppLink, log *logrus.Entry) (*Server, error) {
 	nodeName := os.Getenv(config.NODENAME)
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -309,7 +309,7 @@ func (s *Server) Serve() {
 	<-s.t.Dying()
 }
 
-func Run(vpp *vpp_client.VppInterface, log *logrus.Entry) {
+func Run(vpp *vpplink.VppLink, log *logrus.Entry) {
 	_server, err := NewServer(vpp, log)
 	if err != nil {
 		log.Errorf("failed to create new server")

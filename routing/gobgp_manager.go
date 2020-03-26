@@ -43,7 +43,7 @@ import (
 	"google.golang.org/grpc"
 	"gopkg.in/tomb.v2"
 
-	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/calico-vpp/vpplink"
 )
 
 const (
@@ -82,11 +82,11 @@ type Server struct {
 	ipam           IpamCache
 	reloadCh       chan string
 	prefixReady    chan int
-	vpp            *vpp_client.VppInterface
+	vpp            *vpplink.VppLink
 	l              *logrus.Entry
 }
 
-func NewServer(vpp *vpp_client.VppInterface, l *logrus.Entry) (*Server, error) {
+func NewServer(vpp *vpplink.VppLink, l *logrus.Entry) (*Server, error) {
 	nodeName := os.Getenv(config.NODENAME)
 	calicoCli, err := calicocli.NewFromEnv()
 	if err != nil {
@@ -761,7 +761,7 @@ func WithdrawLocalAddress(addr net.IPNet) error {
 	return server.withdrawLocalAddress(addr)
 }
 
-func Run(vpp *vpp_client.VppInterface, l *logrus.Entry) {
+func Run(vpp *vpplink.VppLink, l *logrus.Entry) {
 	rawloglevel := os.Getenv("CALICO_BGP_LOGSEVERITYSCREEN")
 	if rawloglevel != "" {
 		loglevel, err := logrus.ParseLevel(rawloglevel)

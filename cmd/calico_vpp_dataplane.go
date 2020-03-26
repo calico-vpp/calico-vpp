@@ -27,7 +27,7 @@ import (
 	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/calico-vpp/routing"
 	"github.com/calico-vpp/calico-vpp/services"
-	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/calico-vpp/vpplink"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -44,31 +44,31 @@ func waitForVppManager() error {
 }
 
 func main() {
-	logger := logrus.New()
-	logger.SetLevel(logrus.DebugLevel)
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
 	signalChannel := make(chan os.Signal, 2)
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
 
 	err := waitForVppManager()
 	if err != nil {
-		logger.Errorf("Vpp Manager not started: %v", err)
+		log.Errorf("Vpp Manager not started: %v", err)
 		return
 	}
 
-	vpp, err := vpp_client.NewVppInterface(config.VppAPISocket, logger.WithFields(logrus.Fields{"component": "vpp-api"}))
+	vpp, err := vpplink.NewVppLink(config.VppAPISocket, log.WithFields(logrus.Fields{"component": "vpp-api"}))
 	if err != nil {
-		logger.Errorf("Cannot create VPP client: %v", err)
+		log.Errorf("Cannot create VPP client: %v", err)
 		return
 	}
 
-	go routing.Run(vpp, logger.WithFields(logrus.Fields{"component": "routing"}))
+	go routing.Run(vpp, log.WithFields(logrus.Fields{"component": "routing"}))
 	<-routing.ServerRunning
 
-	go services.Run(vpp, logger.WithFields(logrus.Fields{"component": "services"}))
-	go cni.Run(vpp, logger.WithFields(logrus.Fields{"component": "cni"}))
+	go services.Run(vpp, log.WithFields(logrus.Fields{"component": "services"}))
+	go cni.Run(vpp, log.WithFields(logrus.Fields{"component": "cni"}))
 
 	<-signalChannel
-	logger.Infof("SIGINT received, exiting")
+	log.Infof("SIGINT received, exiting")
 	routing.GracefulStop()
 	cni.GracefulStop()
 	services.GracefulStop()

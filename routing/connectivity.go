@@ -26,7 +26,8 @@ import (
 	"github.com/projectcalico/libcalico-go/lib/options"
 	"golang.org/x/net/context"
 
-	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/calico-vpp/vpplink"
+	"github.com/calico-vpp/vpplink/types"
 )
 
 var (
@@ -114,7 +115,11 @@ func (s *Server) addIpipConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 boo
 	swIfIndex := tunnelState.IpipIfs[otherNodeIP.String()]
 
 	s.l.Debugf("Adding ipip tunnel route to %s via swIfIndex %d", dst.IP.String(), swIfIndex)
-	return s.vpp.ReplaceRoute(isV4, dst, nil, swIfIndex)
+	return s.vpp.RouteAdd(&types.Route{
+		Dst:       &dst,
+		Gw:        nil,
+		SwIfIndex: swIfIndex,
+	})
 }
 
 func (s *Server) delIpipConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool) error {
@@ -126,7 +131,11 @@ func (s *Server) delIpipConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 boo
 	if !found {
 		return errors.Errorf("Deleting unknown ipip tunnel %s", otherNodeIP.String())
 	}
-	err := s.vpp.DelRoute(isV4, dst, nil, swIfIndex)
+	err := s.vpp.RouteDel(&types.Route{
+		Dst:       &dst,
+		Gw:        nil,
+		SwIfIndex: swIfIndex,
+	})
 	if err != nil {
 		return errors.Wrapf(err, "Error deleting ipip tunnel route")
 	}
@@ -136,12 +145,22 @@ func (s *Server) delIpipConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 boo
 
 func (s *Server) addFlatIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool) error {
 	s.l.Printf("adding route %s to VPP", dst.String())
-	return errors.Wrap(s.vpp.ReplaceRoute(isV4, dst, otherNodeIP, vpp_client.INTERFACE_ANY), "error replacing route")
+	err := s.vpp.RouteAdd(&types.Route{
+		Dst:       &dst,
+		Gw:        otherNodeIP,
+		SwIfIndex: vpplink.AnyInterface,
+	})
+	return errors.Wrap(err, "error replacing route")
 }
 
 func (s *Server) delFlatIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool) error {
 	s.l.Debugf("removing route %s from VPP", dst.String())
-	return errors.Wrap(s.vpp.DelRoute(isV4, dst, otherNodeIP, vpp_client.INTERFACE_ANY), "error deleting route")
+	err := s.vpp.RouteDel(&types.Route{
+		Dst:       &dst,
+		Gw:        otherNodeIP,
+		SwIfIndex: vpplink.AnyInterface,
+	})
+	return errors.Wrap(err, "error deleting route")
 }
 
 func (s *Server) AddIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool, IsWithdraw bool) error {

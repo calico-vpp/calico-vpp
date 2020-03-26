@@ -22,7 +22,7 @@ import (
 
 	pb "github.com/calico-vpp/calico-vpp/cni/proto"
 	"github.com/calico-vpp/calico-vpp/config"
-	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/calico-vpp/vpplink"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 )
@@ -33,7 +33,7 @@ type server struct {
 var (
 	logger     *logrus.Entry
 	grpcServer *grpc.Server
-	vpp        *vpp_client.VppInterface
+	vpp        *vpplink.VppLink
 )
 
 func (s *server) Add(ctx context.Context, in *pb.AddRequest) (*pb.AddReply, error) {
@@ -76,7 +76,7 @@ func GracefulStop() {
 }
 
 // Serve runs the grpc server for the Calico CNI backend API
-func Run(v *vpp_client.VppInterface, l *logrus.Entry) {
+func Run(v *vpplink.VppLink, l *logrus.Entry) {
 	var err error
 	logger = l
 	vpp = v

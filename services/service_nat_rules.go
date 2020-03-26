@@ -19,15 +19,14 @@ import (
 	"net"
 
 	"github.com/calico-vpp/calico-vpp/config"
-	vppip "github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
-	vppnat "github.com/calico-vpp/calico-vpp/vpp-1908-api/nat"
-	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/calico-vpp/vpplink"
+	"github.com/calico-vpp/vpplink/types"
 	"github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-func AnnounceContainerInterface(vpp *vpp_client.VppInterface, swIfIndex uint32) error {
+func AnnounceContainerInterface(vpp *vpplink.VppLink, swIfIndex uint32) error {
 	// server object might not already be initialized
 	err := vpp.AddNat44InsideInterface(swIfIndex)
 	if err != nil {
@@ -36,7 +35,7 @@ func AnnounceContainerInterface(vpp *vpp_client.VppInterface, swIfIndex uint32) 
 	return vpp.AddNat44OutsideInterface(swIfIndex)
 }
 
-func WithdrawContainerInterface(vpp *vpp_client.VppInterface, swIfIndex uint32) error {
+func WithdrawContainerInterface(vpp *vpplink.VppLink, swIfIndex uint32) error {
 	// server object might not already be initialized
 	return vpp.DelNat44OutsideInterface(swIfIndex)
 }
@@ -55,16 +54,16 @@ func (s *Server) getTargetPort(sPort v1.ServicePort) (int32, error) {
 	}
 }
 
-func (s *Server) getServicePortProto(proto v1.Protocol) vppip.IPProto {
+func (s *Server) getServicePortProto(proto v1.Protocol) types.IPProto {
 	switch proto {
 	case v1.ProtocolUDP:
-		return vppip.IP_API_PROTO_UDP
+		return types.UDP
 	case v1.ProtocolSCTP:
-		return vppip.IP_API_PROTO_SCTP
+		return types.SCTP
 	case v1.ProtocolTCP:
-		return vppip.IP_API_PROTO_TCP
+		return types.TCP
 	default:
-		return vppip.IP_API_PROTO_TCP
+		return types.TCP
 	}
 }
 
@@ -97,7 +96,7 @@ func (s *Server) addNat44NodePort(service *v1.Service, ep *v1.Endpoints) (err er
 	if err != nil {
 		return errors.Wrap(err, "Error adding nat44 host-vpp tap interface")
 	}
-	err = s.vpp.AddNat44InterfaceAddress(config.DataInterfaceSwIfIndex, vppnat.NAT_IS_TWICE_NAT)
+	err = s.vpp.AddNat44InterfaceAddress(config.DataInterfaceSwIfIndex, types.NatTwice)
 	if err != nil {
 		return errors.Wrap(err, "Error adding nat44 physical interface address")
 	}

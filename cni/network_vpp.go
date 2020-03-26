@@ -22,8 +22,8 @@ import (
 	"net"
 	"os"
 
-	vppip "github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
-	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/calico-vpp/vpplink"
+	"github.com/calico-vpp/vpplink/types"
 
 	pb "github.com/calico-vpp/calico-vpp/cni/proto"
 	"github.com/calico-vpp/calico-vpp/config"
@@ -89,8 +89,7 @@ func configureContainerSysctls(logger *logrus.Entry, allowIPForwarding, hasIPv4,
 }
 
 // SetupRoutes sets up the routes for the host side of the veth pair.
-func SetupVppRoutes(v *vpp_client.VppInterface, logger *logrus.Entry, swIfIndex uint32, ipConfigs []*pb.IPConfig) error {
-	var address vppip.Address
+func SetupVppRoutes(v *vpplink.VppLink, logger *logrus.Entry, swIfIndex uint32, ipConfigs []*pb.IPConfig) error {
 	logger.Infof("Configuring VPP side routes")
 	// Go through all the IPs and add routes for each IP in the result.
 	for _, ipAddr := range ipConfigs {
@@ -102,35 +101,26 @@ func SetupVppRoutes(v *vpp_client.VppInterface, logger *logrus.Entry, swIfIndex 
 		} else {
 			ip.Mask = net.CIDRMask(128, 128)
 		}
-		err := v.ReplaceRoute(isIPv4, ip, ip.IP, swIfIndex)
+		err := v.RouteAdd(&types.Route{
+			Dst:       &ip,
+			Gw:        ip.IP,
+			SwIfIndex: swIfIndex,
+		})
 		if err != nil {
 			return errors.Wrapf(err, "Cannot add route in VPP")
 		}
 
-		if isIPv4 {
-			ip := [4]uint8{}
-			copy(ip[:], ipAddr.GetIp().GetIp().GetIp())
-			address = vppip.Address{
-				Af: vppip.ADDRESS_IP4,
-				Un: vppip.AddressUnionIP4(ip),
-			}
-		} else {
-			ip := [16]uint8{}
-			copy(ip[:], ipAddr.GetIp().GetIp().GetIp())
-			address = vppip.Address{
-				Af: vppip.ADDRESS_IP6,
-				Un: vppip.AddressUnionIP6(ip),
-			}
+		hardwareAddr, err := net.ParseMAC(config.ContainerSideMacAddressString)
+		if err != nil {
+			return errors.Wrapf(err, "Unable to parse mac: %s", config.ContainerSideMacAddressString)
 		}
-
 		logrus.WithFields(logrus.Fields{"IP": ipAddr.GetIp()}).Debugf("CNI adding VPP route")
-		neighbor := vppip.IPNeighbor{
-			SwIfIndex:  swIfIndex,
-			Flags:      vppip.IP_API_NEIGHBOR_FLAG_STATIC,
-			MacAddress: config.ContainerSideMacAddress,
-			IPAddress:  address,
-		}
-		err = v.AddNeighbor(neighbor)
+		err = v.AddNeighbor(&types.Neighbor{
+			SwIfIndex:    swIfIndex,
+			IP:           ip.IP,
+			HardwareAddr: hardwareAddr,
+			Flags:        types.IPNeighborStatic,
+		})
 		if err != nil {
 			return errors.Wrapf(err, "Cannot add neighbor in VPP")
 		}
@@ -139,7 +129,7 @@ func SetupVppRoutes(v *vpp_client.VppInterface, logger *logrus.Entry, swIfIndex 
 }
 
 // DoVppNetworking performs the networking for the given config and IPAM result
-func addVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.AddRequest) (ifName, contTapMac string, err error) {
+func addVppInterface(v *vpplink.VppLink, logger *logrus.Entry, args *pb.AddRequest) (ifName, contTapMac string, err error) {
 	logger.Infof("creating container interface using VPP networking")
 
 	// Select the first 11 characters of the containerID for the host veth.
@@ -163,8 +153,23 @@ func addVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 		}
 	}
 
+	vppSideMacAddress, err := net.ParseMAC(config.VppSideMacAddressString)
+	if err != nil {
+		return "", "", errors.Wrapf(err, "Unable to parse mac: %s", config.VppSideMacAddressString)
+	}
+	containerSideMacAddress, err := net.ParseMAC(config.ContainerSideMacAddressString)
+	if err != nil {
+		return "", "", errors.Wrapf(err, "Unable to parse mac: %s", config.ContainerSideMacAddressString)
+	}
+
 	// TODO: Clean up old tap if one is found with this tag
-	swIfIndex, vppIPAddr, err := v.CreateTap(netns, contTapName, tapTag, hasIPv6)
+	swIfIndex, err := v.CreateTapV2(&types.TapV2{
+		HostNamespace:  netns,
+		HostIfName:     contTapName,
+		Tag:            tapTag,
+		MacAddress:     vppSideMacAddress,
+		HostMacAddress: containerSideMacAddress,
+	})
 	logger.Infof("Created tap with sw_if_index %d err %v", swIfIndex, err)
 	if err != nil {
 		delVppInterface(v, logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
@@ -173,6 +178,35 @@ func addVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 		})
 		return "", "", err
 	}
+
+	// Add VPP side fake address
+	// TODO: Only if v4 is enabled
+	// There is currently a hard limit in VPP to 1024 taps - so this should be safe
+	vppIPNet := &net.IPNet{}
+	vppIPNet.IP = net.IPv4(byte(169), byte(254), byte(swIfIndex>>8), byte(swIfIndex))
+	vppIPNet.Mask = net.CIDRMask(32, 32)
+	err = v.AddInterfaceAddress(swIfIndex, vppIPNet)
+	if err != nil {
+		delVppInterface(v, logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
+			InterfaceName: contTapName,
+			Netns:         netns,
+		})
+		return "", "", err
+	}
+
+	// Add IPv6 neighbor entry if v6 is enabled
+	if hasIPv6 {
+		err = v.EnableInterfaceIP6(swIfIndex)
+		if err != nil {
+			delVppInterface(v, logger.WithFields(logrus.Fields{"cleanup": true}), &pb.DelRequest{
+				InterfaceName: contTapName,
+				Netns:         netns,
+			})
+			return "", "", err
+		}
+		// Compute a link local address from mac address, and set it
+	}
+
 	err = services.AnnounceContainerInterface(v, swIfIndex)
 	if err != nil {
 		return "", "", errors.Wrap(err, "failed to announce address to services")
@@ -192,13 +226,18 @@ func addVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 		// Do the per-IP version set-up.  Add gateway routes etc.
 		if hasIPv4 {
 			// Add static neighbor entry for the VPP side of the tap
-			err := netlink.NeighAdd(
+
+			hardwareAddr, err := net.ParseMAC(config.VppSideMacAddressString)
+			if err != nil {
+				return errors.Wrapf(err, "Unable to parse mac: %s", config.VppSideMacAddressString)
+			}
+			err = netlink.NeighAdd(
 				&netlink.Neigh{
 					LinkIndex:    contTap.Attrs().Index,
 					Family:       netlink.FAMILY_V4,
 					State:        netlink.NUD_PERMANENT,
-					IP:           vppIPAddr,
-					HardwareAddr: config.VppSideMacAddress[:],
+					IP:           vppIPNet.IP,
+					HardwareAddr: hardwareAddr,
 				},
 			)
 			if err != nil {
@@ -206,12 +245,11 @@ func addVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 			}
 
 			// Add a connected route to a dummy next hop so that a default route can be set
-			gwNet := &net.IPNet{IP: vppIPAddr, Mask: net.CIDRMask(32, 32)}
 			err = netlink.RouteAdd(
 				&netlink.Route{
 					LinkIndex: contTap.Attrs().Index,
 					Scope:     netlink.SCOPE_LINK,
-					Dst:       gwNet,
+					Dst:       vppIPNet,
 				},
 			)
 
@@ -228,8 +266,8 @@ func addVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 				if err = ip.AddRoute(&net.IPNet{
 					IP:   r.GetIp().GetIp(),
 					Mask: net.CIDRMask(int(r.GetPrefixLen()), 32),
-				}, vppIPAddr, contTap); err != nil {
-					return fmt.Errorf("failed to add IPv4 route for %v via %v: %v", r, vppIPAddr, err)
+				}, vppIPNet.IP, contTap); err != nil {
+					return fmt.Errorf("failed to add IPv4 route for %v via %v: %v", r, vppIPNet, err)
 				}
 			}
 		}
@@ -356,7 +394,7 @@ func addVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 }
 
 // CleanUpVPPNamespace deletes the devices in the network namespace.
-func delVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.DelRequest) error {
+func delVppInterface(v *vpplink.VppLink, logger *logrus.Entry, args *pb.DelRequest) error {
 	contIfName := args.GetInterfaceName()
 	netns := args.GetNetns()
 	logger.Infof("deleting container interface using VPP networking, netns: %s, interface: %s", netns, contIfName)
@@ -420,7 +458,7 @@ func delVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 			return errors.Wrap(err, "GetInterfaceNeighbors errored")
 		}
 		for _, neighbor := range neighbors {
-			err = v.DelNeighbor(neighbor)
+			err = v.DelNeighbor(&neighbor)
 			if err != nil {
 				logger.Warnf("error deleting neighbor entry from VPP: %v", err)
 			}
@@ -436,28 +474,27 @@ func delVppInterface(v *vpp_client.VppInterface, logger *logrus.Entry, args *pb.
 		}
 		for _, route := range routes {
 			// Filter routes we don't want to delete
-			if route.NPaths != 1 || route.Paths[0].SwIfIndex != swIfIndex {
+			if route.SwIfIndex != swIfIndex {
 				continue // Routes on other interfaces
 			}
+			maskSize, _ := route.Dst.Mask.Size()
 			if isIPv6 == 0 {
-				if route.Prefix.Len != 32 {
+				if maskSize != 32 {
 					continue
 				}
-				ip4 := route.Prefix.Address.Un.GetIP4()
-				if bytes.Equal(ip4[0:2], []uint8{169, 254}) {
+				if bytes.Equal(route.Dst.IP[0:2], []uint8{169, 254}) {
 					continue // Addresses configured on VPP side
 				}
 			}
 			if isIPv6 == 1 {
-				if route.Prefix.Len != 128 {
+				if maskSize != 128 {
 					continue
 				}
-				ip6 := route.Prefix.Address.Un.GetIP6()
-				if bytes.Equal(ip6[0:2], []uint8{0xfe, 0x80}) {
+				if bytes.Equal(route.Dst.IP[0:2], []uint8{0xfe, 0x80}) {
 					continue // Link locals
 				}
 			}
-			err = v.DelIPRoute(route)
+			err = v.RouteDel(&route)
 			if err != nil {
 				logger.Warnf("error deleting route %+v from VPP: %v", route, err)
 			}
