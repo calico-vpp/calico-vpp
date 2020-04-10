@@ -1,2 +1,10 @@
 cmd/calico-vpp-agent
 
+*.out
+*.test
+
+.vscode
+
+.DS_Store
+
+
