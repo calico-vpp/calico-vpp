@@ -19,15 +19,14 @@ import (
 	"net"
 
 	"github.com/calico-vpp/calico-vpp/config"
-	vppip "github.com/calico-vpp/calico-vpp/vpp-1908-api/ip"
-	vppnat "github.com/calico-vpp/calico-vpp/vpp-1908-api/nat"
-	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/calico-vpp/vpplink"
+	"github.com/calico-vpp/vpplink/types"
 	"github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-func AnnounceContainerInterface(vpp *vpp_client.VppInterface, swIfIndex uint32) error {
+func AnnounceContainerInterface(vpp *vpplink.VppLink, swIfIndex uint32) error {
 	// server object might not already be initialized
 	err := vpp.AddNat44InsideInterface(swIfIndex)
 	if err != nil {
@@ -36,7 +35,7 @@ func AnnounceContainerInterface(vpp *vpp_client.VppInterface, swIfIndex uint32) 
 	return vpp.AddNat44OutsideInterface(swIfIndex)
 }
 
-func WithdrawContainerInterface(vpp *vpp_client.VppInterface, swIfIndex uint32) error {
+func WithdrawContainerInterface(vpp *vpplink.VppLink, swIfIndex uint32) error {
 	// server object might not already be initialized
 	return vpp.DelNat44OutsideInterface(swIfIndex)
 }
@@ -55,16 +54,16 @@ func (s *Server) getTargetPort(sPort v1.ServicePort) (int32, error) {
 	}
 }
 
-func (s *Server) getServicePortProto(proto v1.Protocol) vppip.IPProto {
+func (s *Server) getServicePortProto(proto v1.Protocol) types.IPProto {
 	switch proto {
 	case v1.ProtocolUDP:
-		return vppip.IP_API_PROTO_UDP
+		return types.UDP
 	case v1.ProtocolSCTP:
-		return vppip.IP_API_PROTO_SCTP
+		return types.SCTP
 	case v1.ProtocolTCP:
-		return vppip.IP_API_PROTO_TCP
+		return types.TCP
 	default:
-		return vppip.IP_API_PROTO_TCP
+		return types.TCP
 	}
 }
 
@@ -87,7 +86,7 @@ func (s *Server) getServiceBackendIPs(servicePort *v1.ServicePort, ep *v1.Endpoi
 func (s *Server) addNat44NodePort(service *v1.Service, ep *v1.Endpoints) (err error) {
 	err = s.vpp.AddNat44Address(service.Spec.ClusterIP)
 	if err != nil {
-		return errors.Wrap(err, "Error adding nat44 address")
+		return errors.Wrapf(err, "Error adding nat44 Nodeport address %s", service.Spec.ClusterIP)
 	}
 	err = s.vpp.AddNat44OutsideInterface(config.DataInterfaceSwIfIndex)
 	if err != nil {
@@ -97,9 +96,9 @@ func (s *Server) addNat44NodePort(service *v1.Service, ep *v1.Endpoints) (err er
 	if err != nil {
 		return errors.Wrap(err, "Error adding nat44 host-vpp tap interface")
 	}
-	err = s.vpp.AddNat44InterfaceAddress(config.DataInterfaceSwIfIndex, vppnat.NAT_IS_TWICE_NAT)
+	err = s.vpp.AddNat44InterfaceAddress(config.DataInterfaceSwIfIndex, types.NatTwice)
 	if err != nil {
-		return errors.Wrap(err, "Error adding nat44 physical interface address")
+		s.log.Errorf("Error adding nat44 physical interface address %+v", err)
 	}
 	nodeIp, _, err := s.getNodeIP()
 	if err != nil {
@@ -120,12 +119,12 @@ func (s *Server) addNat44NodePort(service *v1.Service, ep *v1.Endpoints) (err er
 		err = s.vpp.AddNat44LB(nodeIp.String(), s.getServicePortProto(servicePort.Protocol),
 			servicePort.Port, backendIPs, targetPort)
 		if err != nil {
-			return errors.Wrapf(err, "Error adding local NAT44 LB rule for NodePort")
+			return errors.Wrapf(err, "Error adding local NAT44 LB rule for NodePort %s", nodeIp.String())
 		}
 		err = s.vpp.AddNat44LB(service.Spec.ClusterIP, s.getServicePortProto(servicePort.Protocol),
 			servicePort.NodePort, backendIPs, targetPort)
 		if err != nil {
-			return errors.Wrapf(err, "Error adding external NAT44 LB rule for NodePort")
+			return errors.Wrapf(err, "Error adding external NAT44 LB rule for NodePort %s", service.Spec.ClusterIP)
 		}
 	}
 	return nil
@@ -165,7 +164,7 @@ func (s *Server) delNat44NodePort(service *v1.Service, ep *v1.Endpoints) (err er
 func (s *Server) addNat44ClusterIP(service *v1.Service, ep *v1.Endpoints) (err error) {
 	err = s.vpp.AddNat44Address(service.Spec.ClusterIP)
 	if err != nil {
-		return errors.Wrap(err, "Error adding nat44 address")
+		return errors.Wrapf(err, "Error adding nat44 address %s", service.Spec.ClusterIP)
 	}
 	err = s.vpp.AddNat44OutsideInterface(config.DataInterfaceSwIfIndex)
 	if err != nil {
@@ -191,7 +190,7 @@ func (s *Server) addNat44ClusterIP(service *v1.Service, ep *v1.Endpoints) (err e
 		err = s.vpp.AddNat44LB(service.Spec.ClusterIP, s.getServicePortProto(servicePort.Protocol),
 			servicePort.Port, backendIPs, targetPort)
 		if err != nil {
-			return errors.Wrap(err, "Error adding nat44 lb config")
+			return errors.Wrapf(err, "Error adding nat44 clusterIP lb config to %s", service.Spec.ClusterIP)
 		}
 	}
 	return nil
@@ -225,18 +224,23 @@ func (s *Server) AddServiceNat(service *v1.Service, ep *v1.Endpoints) error {
 	if service == nil || ep == nil {
 		return errors.Errorf("nil service/endpoint, cannot process")
 	}
-	if net.ParseIP(service.Spec.ClusterIP) == nil {
+	clusterIP := net.ParseIP(service.Spec.ClusterIP)
+	if clusterIP == nil {
 		s.log.Debugf("Service %s/%s has no IP, skipping", service.Namespace, service.Name)
 		return nil
 	}
-
-	switch service.Spec.Type {
-	case v1.ServiceTypeClusterIP:
-		return s.addNat44ClusterIP(service, ep)
-	case v1.ServiceTypeNodePort:
-		return s.addNat44NodePort(service, ep)
-	default:
-		s.log.Debugf("service type creation not supported : %s", service.Spec.Type)
+	if vpplink.IsIP4(clusterIP) {
+		switch service.Spec.Type {
+		case v1.ServiceTypeClusterIP:
+			return s.addNat44ClusterIP(service, ep)
+		case v1.ServiceTypeNodePort:
+			return s.addNat44NodePort(service, ep)
+		default:
+			s.log.Debugf("service type creation not supported : %s", service.Spec.Type)
+			return nil
+		}
+	} else {
+		s.log.Infof("IP6 not supported : %s", service.Spec.ClusterIP)
 		return nil
 	}
 }
@@ -245,14 +249,23 @@ func (s *Server) DelServiceNat(service *v1.Service, ep *v1.Endpoints) error {
 	if service == nil || ep == nil {
 		return errors.Errorf("nil service/endpoint, cannot process")
 	}
-
-	switch service.Spec.Type {
-	case v1.ServiceTypeClusterIP:
-		return s.delNat44ClusterIP(service, ep)
-	case v1.ServiceTypeNodePort:
-		return s.delNat44NodePort(service, ep)
-	default:
-		s.log.Debugf("service type deletion not supported : %s", service.Spec.Type)
+	clusterIP := net.ParseIP(service.Spec.ClusterIP)
+	if clusterIP == nil {
+		s.log.Debugf("Service %s/%s has no IP, skipping", service.Namespace, service.Name)
+		return nil
+	}
+	if vpplink.IsIP4(clusterIP) {
+		switch service.Spec.Type {
+		case v1.ServiceTypeClusterIP:
+			return s.delNat44ClusterIP(service, ep)
+		case v1.ServiceTypeNodePort:
+			return s.delNat44NodePort(service, ep)
+		default:
+			s.log.Debugf("service type deletion not supported : %s", service.Spec.Type)
+			return nil
+		}
+	} else {
+		s.log.Infof("IP6 not supported : %s", service.Spec.ClusterIP)
 		return nil
 	}
 }

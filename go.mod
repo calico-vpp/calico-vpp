@@ -3,8 +3,9 @@ module github.com/calico-vpp/calico-vpp
 go 1.12
 
 require (
-	git.fd.io/govpp.git v0.1.0
+	git.fd.io/govpp.git v0.2.0
 	github.com/armon/go-radix v1.0.0 // indirect
+	github.com/calico-vpp/vpplink v0.0.0-20200402143852-e4eec4bb38f3
 	github.com/containernetworking/plugins v0.8.2
 	github.com/coreos/etcd v3.3.17+incompatible
 	github.com/dgryski/go-farm v0.0.0-20191112170834-c2139c5d712b // indirect
@@ -17,7 +18,7 @@ require (
 	github.com/lunixbochs/struc v0.0.0-20190916212049-a5c72983bc42
 	github.com/osrg/gobgp v2.0.0+incompatible
 	github.com/pborman/uuid v0.0.0-20150603214016-ca53cad383ca // indirect
-	github.com/pkg/errors v0.8.0
+	github.com/pkg/errors v0.9.1
 	github.com/projectcalico/cni-plugin v3.8.4+incompatible // indirect
 	github.com/projectcalico/go-yaml v0.0.0-20161201183616-955bc3e451ef // indirect
 	github.com/projectcalico/libcalico-go v1.7.3

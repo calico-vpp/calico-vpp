@@ -43,7 +43,7 @@ import (
 	"google.golang.org/grpc"
 	"gopkg.in/tomb.v2"
 
-	"github.com/calico-vpp/calico-vpp/vpp_client"
+	"github.com/calico-vpp/vpplink"
 )
 
 const (
@@ -82,11 +82,11 @@ type Server struct {
 	ipam           IpamCache
 	reloadCh       chan string
 	prefixReady    chan int
-	vpp            *vpp_client.VppInterface
+	vpp            *vpplink.VppLink
 	l              *logrus.Entry
 }
 
-func NewServer(vpp *vpp_client.VppInterface, l *logrus.Entry) (*Server, error) {
+func NewServer(vpp *vpplink.VppLink, l *logrus.Entry) (*Server, error) {
 	nodeName := os.Getenv(config.NODENAME)
 	calicoCli, err := calicocli.NewFromEnv()
 	if err != nil {
@@ -115,8 +115,14 @@ func NewServer(vpp *vpp_client.VppInterface, l *logrus.Entry) (*Server, error) {
 	}
 
 	maxSize := 256 << 20
-	grpcOpts := []grpc.ServerOption{grpc.MaxRecvMsgSize(maxSize), grpc.MaxSendMsgSize(maxSize)}
-	bgpServer := bgpserver.NewBgpServer(bgpserver.GrpcListenAddress("localhost:50051"), bgpserver.GrpcOption(grpcOpts))
+	grpcOpts := []grpc.ServerOption{
+		grpc.MaxRecvMsgSize(maxSize),
+		grpc.MaxSendMsgSize(maxSize),
+	}
+	bgpServer := bgpserver.NewBgpServer(
+		bgpserver.GrpcListenAddress("localhost:50051"),
+		bgpserver.GrpcOption(grpcOpts),
+	)
 
 	server := Server{
 		bgpServer:   bgpServer,
@@ -264,13 +270,21 @@ func (s *Server) getPeerASN(host string) (*numorstring.ASNumber, error) {
 }
 
 func (s *Server) getGlobalConfig() (*bgpapi.Global, error) {
+	var routerId string
 	asn, err := s.getNodeASN()
 	if err != nil {
 		return nil, errors.Wrap(err, "error getting current node AS number")
 	}
+	if s.hasV4 {
+		routerId = s.ipv4.String()
+	} else if s.hasV6 {
+		routerId = s.ipv6.String()
+	} else {
+		return nil, errors.Wrap(err, "Cannot make routerId out of IP")
+	}
 	return &bgpapi.Global{
 		As:       uint32(*asn),
-		RouterId: s.ipv4.String(),
+		RouterId: routerId,
 	}, nil
 }
 
@@ -319,6 +333,10 @@ func (s *Server) makePath(prefix string, isWithdrawal bool) (*bgpapi.Path, error
 		nlriAttr, err := ptypes.MarshalAny(&bgpapi.MpReachNLRIAttribute{
 			NextHops: []string{s.ipv6.String()},
 			Nlris:    []*any.Any{nlri},
+			Family: &bgpapi.Family{
+				Afi:  bgpapi.Family_AFI_IP6,
+				Safi: bgpapi.Family_SAFI_UNICAST,
+			},
 		})
 		if err != nil {
 			return nil, err
@@ -511,7 +529,7 @@ func (s *Server) watchBGPPath() error {
 		}
 	}
 	if s.hasV6 {
-		stopV6Monitor, err = startMonitor(&bgpFamilyUnicastIPv4)
+		stopV6Monitor, err = startMonitor(&bgpFamilyUnicastIPv6)
 		if err != nil {
 			return errors.Wrap(err, "error starting v6 path monitor")
 		}
@@ -761,7 +779,7 @@ func WithdrawLocalAddress(addr net.IPNet) error {
 	return server.withdrawLocalAddress(addr)
 }
 
-func Run(vpp *vpp_client.VppInterface, l *logrus.Entry) {
+func Run(vpp *vpplink.VppLink, l *logrus.Entry) {
 	rawloglevel := os.Getenv("CALICO_BGP_LOGSEVERITYSCREEN")
 	if rawloglevel != "" {
 		loglevel, err := logrus.ParseLevel(rawloglevel)

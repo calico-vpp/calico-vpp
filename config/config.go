@@ -25,6 +25,6 @@ const (
 )
 
 var (
-	VppSideMacAddress       = [6]byte{2, 0, 0, 0, 0, 2}
-	ContainerSideMacAddress = [6]byte{2, 0, 0, 0, 0, 1}
+	VppSideMacAddressString       = "02:00:00:00:00:02"
+	ContainerSideMacAddressString = "02:00:00:00:00:01"
 )
