@@ -115,8 +115,14 @@ func NewServer(vpp *vpplink.VppLink, l *logrus.Entry) (*Server, error) {
 	}
 
 	maxSize := 256 << 20
-	grpcOpts := []grpc.ServerOption{grpc.MaxRecvMsgSize(maxSize), grpc.MaxSendMsgSize(maxSize)}
-	bgpServer := bgpserver.NewBgpServer(bgpserver.GrpcListenAddress("localhost:50051"), bgpserver.GrpcOption(grpcOpts))
+	grpcOpts := []grpc.ServerOption{
+		grpc.MaxRecvMsgSize(maxSize),
+		grpc.MaxSendMsgSize(maxSize),
+	}
+	bgpServer := bgpserver.NewBgpServer(
+		bgpserver.GrpcListenAddress("localhost:50051"),
+		bgpserver.GrpcOption(grpcOpts),
+	)
 
 	server := Server{
 		bgpServer:   bgpServer,
@@ -264,13 +270,21 @@ func (s *Server) getPeerASN(host string) (*numorstring.ASNumber, error) {
 }
 
 func (s *Server) getGlobalConfig() (*bgpapi.Global, error) {
+	var routerId string
 	asn, err := s.getNodeASN()
 	if err != nil {
 		return nil, errors.Wrap(err, "error getting current node AS number")
 	}
+	if s.hasV4 {
+		routerId = s.ipv4.String()
+	} else if s.hasV6 {
+		routerId = s.ipv6.String()
+	} else {
+		return nil, errors.Wrap(err, "Cannot make routerId out of IP")
+	}
 	return &bgpapi.Global{
 		As:       uint32(*asn),
-		RouterId: s.ipv4.String(),
+		RouterId: routerId,
 	}, nil
 }
 
@@ -319,6 +333,10 @@ func (s *Server) makePath(prefix string, isWithdrawal bool) (*bgpapi.Path, error
 		nlriAttr, err := ptypes.MarshalAny(&bgpapi.MpReachNLRIAttribute{
 			NextHops: []string{s.ipv6.String()},
 			Nlris:    []*any.Any{nlri},
+			Family: &bgpapi.Family{
+				Afi:  bgpapi.Family_AFI_IP6,
+				Safi: bgpapi.Family_SAFI_UNICAST,
+			},
 		})
 		if err != nil {
 			return nil, err
@@ -511,7 +529,7 @@ func (s *Server) watchBGPPath() error {
 		}
 	}
 	if s.hasV6 {
-		stopV6Monitor, err = startMonitor(&bgpFamilyUnicastIPv4)
+		stopV6Monitor, err = startMonitor(&bgpFamilyUnicastIPv6)
 		if err != nil {
 			return errors.Wrap(err, "error starting v6 path monitor")
 		}
