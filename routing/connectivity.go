@@ -20,22 +20,15 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/pkg/errors"
 	calicov3 "github.com/projectcalico/libcalico-go/lib/apis/v3"
 	"github.com/projectcalico/libcalico-go/lib/options"
 	"golang.org/x/net/context"
-
-	"github.com/calico-vpp/vpplink"
-	"github.com/calico-vpp/vpplink/types"
 )
 
-var (
-	tunnelStates = make(map[string]*NodeTunnels)
-)
-
-type NodeTunnels struct {
-	IpipIfs map[string]uint32
+type connectivityProvider interface {
+	addConnectivity(dst net.IPNet, destNode net.IP, isV4 bool) error
+	delConnectivity(dst net.IPNet, destNode net.IP, isV4 bool) error
 }
 
 func (s *Server) getNodeIPNet() (ip net.IP, ipNet *net.IPNet, err error) {
@@ -74,112 +67,20 @@ func (s *Server) needIpipTunnel(dst net.IPNet, otherNodeIP net.IP, isV4 bool) (i
 	return true, nil
 }
 
-func (s *Server) addIpipConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool) error {
-	if _, found := tunnelStates[s.nodeName]; !found {
-		tunnelStates[s.nodeName] = &NodeTunnels{
-			IpipIfs: make(map[string]uint32),
-		}
-	}
-	tunnelState := tunnelStates[s.nodeName]
-	s.l.Debugf("Adding ipip Tunnel to VPP")
+func (s *Server) updateIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool, IsWithdraw bool) error {
+	var provider connectivityProvider = s.flat
 
-	if _, found := tunnelState.IpipIfs[otherNodeIP.String()]; !found {
-		nodeIp, _, err := s.getNodeIPNet()
-		if err != nil {
-			return errors.Wrapf(err, "Error getting node ip")
-		}
-
-		swIfIndex, err := s.vpp.AddIpipTunnel(nodeIp, otherNodeIP, isV4, 0)
-		if err != nil {
-			return errors.Wrapf(err, "Error adding ipip tunnel %s -> %s", nodeIp.String(), otherNodeIP.String())
-		}
-		err = s.vpp.InterfaceSetUnnumbered(swIfIndex, config.DataInterfaceSwIfIndex)
-		if err != nil {
-			// TODO : delete tunnel
-			return errors.Wrapf(err, "Error seting ipip tunnel unnumbered")
-		}
-
-		err = s.vpp.InterfaceAdminUp(swIfIndex)
-		if err != nil {
-			// TODO : delete tunnel
-			return errors.Wrapf(err, "Error setting ipip interface up")
-		}
-
-		err = s.vpp.AddNat44OutsideInterface(swIfIndex)
-		if err != nil {
-			// TODO : delete tunnel
-			return errors.Wrapf(err, "Error setting ipip interface out for nat44")
-		}
-		tunnelState.IpipIfs[otherNodeIP.String()] = swIfIndex
-	}
-	swIfIndex := tunnelState.IpipIfs[otherNodeIP.String()]
-
-	s.l.Debugf("Adding ipip tunnel route to %s via swIfIndex %d", dst.IP.String(), swIfIndex)
-	return s.vpp.RouteAdd(&types.Route{
-		Dst:       &dst,
-		Gw:        nil,
-		SwIfIndex: swIfIndex,
-	})
-}
-
-func (s *Server) delIpipConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool) error {
-	tunnelState, found := tunnelStates[s.nodeName]
-	if !found {
-		return errors.Errorf("Deleting ipip tunnel for unknown node %s", s.nodeName)
-	}
-	swIfIndex, found := tunnelState.IpipIfs[otherNodeIP.String()]
-	if !found {
-		return errors.Errorf("Deleting unknown ipip tunnel %s", otherNodeIP.String())
-	}
-	err := s.vpp.RouteDel(&types.Route{
-		Dst:       &dst,
-		Gw:        nil,
-		SwIfIndex: swIfIndex,
-	})
-	if err != nil {
-		return errors.Wrapf(err, "Error deleting ipip tunnel route")
-	}
-	delete(tunnelState.IpipIfs, otherNodeIP.String())
-	return nil
-}
-
-func (s *Server) addFlatIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool) error {
-	s.l.Printf("adding route %s to VPP", dst.String())
-	err := s.vpp.RouteAdd(&types.Route{
-		Dst:       &dst,
-		Gw:        otherNodeIP,
-		SwIfIndex: vpplink.AnyInterface,
-	})
-	return errors.Wrap(err, "error replacing route")
-}
-
-func (s *Server) delFlatIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool) error {
-	s.l.Debugf("removing route %s from VPP", dst.String())
-	err := s.vpp.RouteDel(&types.Route{
-		Dst:       &dst,
-		Gw:        otherNodeIP,
-		SwIfIndex: vpplink.AnyInterface,
-	})
-	return errors.Wrap(err, "error deleting route")
-}
-
-func (s *Server) AddIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool, IsWithdraw bool) error {
 	ipip, err := s.needIpipTunnel(dst, otherNodeIP, isV4)
 	if err != nil {
 		return errors.Wrapf(err, "error checking for ipip tunnel")
 	}
-
 	if ipip {
-		if IsWithdraw {
-			return s.delIpipConnectivity(dst, otherNodeIP, isV4)
-		} else {
-			return s.addIpipConnectivity(dst, otherNodeIP, isV4)
-		}
+		provider = s.ipip
 	}
 
 	if IsWithdraw {
-		return s.delFlatIPConnectivity(dst, otherNodeIP, isV4)
+		return provider.delConnectivity(dst, otherNodeIP, isV4)
 	} else {
-		return s.addFlatIPConnectivity(dst, otherNodeIP, isV4)
+		return provider.addConnectivity(dst, otherNodeIP, isV4)
 	}
 }

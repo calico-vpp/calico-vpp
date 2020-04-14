@@ -84,6 +84,9 @@ type Server struct {
 	prefixReady    chan int
 	vpp            *vpplink.VppLink
 	l              *logrus.Entry
+	// Connectivity providers
+	flat *flatRouteProvider
+	ipip *ipipProvider
 }
 
 func NewServer(vpp *vpplink.VppLink, l *logrus.Entry) (*Server, error) {
@@ -138,6 +141,8 @@ func NewServer(vpp *vpplink.VppLink, l *logrus.Entry) (*Server, error) {
 		vpp:         vpp,
 		l:           l,
 	}
+	server.flat = newFlatL3Provider(&server)
+	server.ipip = newIPIPProvider(&server)
 
 	BGPConf, err := server.getDefaultBGPConfig()
 	if err != nil {
@@ -485,7 +490,7 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 		return fmt.Errorf("Cannot handle Nlri: %+v", path.Nlri)
 	}
 
-	return s.AddIPConnectivity(dst, otherNodeIP, isV4, path.IsWithdraw)
+	return s.updateIPConnectivity(dst, otherNodeIP, isV4, path.IsWithdraw)
 }
 
 // watchBGPPath watches BGP routes from other peers and inject them into
