@@ -85,7 +85,7 @@ type Server struct {
 	vpp            *vpplink.VppLink
 	l              *logrus.Entry
 	// Connectivity providers
-	flat *flatRouteProvider
+	flat *flatL3Provider
 	ipip *ipipProvider
 }
 

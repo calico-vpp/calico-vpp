@@ -29,7 +29,7 @@ type flatL3Provider struct {
 	s *Server
 }
 
-func newflatL3Provider(s *Server) (p *flatL3Provider) {
+func newFlatL3Provider(s *Server) (p *flatL3Provider) {
 	p = &flatL3Provider{
 		l: s.l.WithField("connectivity", "flat"),
 		s: s,
