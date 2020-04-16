@@ -5,7 +5,7 @@ go 1.12
 require (
 	git.fd.io/govpp.git v0.3.4
 	github.com/armon/go-radix v1.0.0 // indirect
-	github.com/calico-vpp/vpplink v0.0.0-20200402143852-e4eec4bb38f3
+	github.com/calico-vpp/vpplink v0.0.0-20200424124835-715fbbae958d
 	github.com/containernetworking/plugins v0.8.2
 	github.com/coreos/etcd v3.3.17+incompatible
 	github.com/dgryski/go-farm v0.0.0-20191112170834-c2139c5d712b // indirect
