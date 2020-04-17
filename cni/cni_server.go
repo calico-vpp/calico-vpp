@@ -22,74 +22,84 @@ import (
 
 	pb "github.com/calico-vpp/calico-vpp/cni/proto"
 	"github.com/calico-vpp/calico-vpp/config"
+	"github.com/calico-vpp/calico-vpp/routing"
+	"github.com/calico-vpp/calico-vpp/services"
 	"github.com/calico-vpp/vpplink"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 )
 
-type server struct {
+type Server struct {
+	log            *logrus.Entry
+	grpcServer     *grpc.Server
+	vpp            *vpplink.VppLink
+	socketListener net.Listener
+	routingServer  *routing.Server
+	servicesServer *services.Server
 }
 
-var (
-	logger     *logrus.Entry
-	grpcServer *grpc.Server
-	vpp        *vpplink.VppLink
-)
-
-func (s *server) Add(ctx context.Context, in *pb.AddRequest) (*pb.AddReply, error) {
-	logger.Infof("CNI server got Add request")
-	ifName, contMac, err := addVppInterface(vpp, logger, in)
+func (s *Server) Add(ctx context.Context, in *pb.AddRequest) (*pb.AddReply, error) {
+	s.log.Infof("CNI server got Add request")
+	ifName, contMac, err := s.AddVppInterface(in)
 	out := &pb.AddReply{
 		Successful:    true,
 		InterfaceName: ifName,
 		ContainerMac:  contMac,
 	}
 	if err != nil {
-		logger.Warnf("Interface creation failed")
+		s.log.Warnf("Interface creation failed")
 		out.Successful = false
 		out.ErrorMessage = err.Error()
 	} else {
-		logger.Infof("Interface creation successful: %s", ifName)
+		s.log.Infof("Interface creation successful: %s", ifName)
 	}
 	return out, nil
 }
 
-func (s *server) Del(ctx context.Context, in *pb.DelRequest) (*pb.DelReply, error) {
-	logger.Infof("CNI server got Del request")
-	err := delVppInterface(vpp, logger, in)
+func (s *Server) Del(ctx context.Context, in *pb.DelRequest) (*pb.DelReply, error) {
+	s.log.Infof("CNI server got Del request")
+	err := s.DelVppInterface(in)
 	if err != nil {
-		logger.Warnf("Interface deletion failed")
+		s.log.Warnf("Interface deletion failed")
 		return &pb.DelReply{
 			Successful:   false,
 			ErrorMessage: err.Error(),
 		}, nil
 	}
-	logger.Infof("Interface deletion successful")
+	s.log.Infof("Interface deletion successful")
 	return &pb.DelReply{
 		Successful: true,
 	}, nil
 }
 
-func GracefulStop() {
-	grpcServer.GracefulStop()
+func (s *Server) Stop() {
+	s.grpcServer.GracefulStop()
 	syscall.Unlink(config.CNIServerSocket)
 }
 
 // Serve runs the grpc server for the Calico CNI backend API
-func Run(v *vpplink.VppLink, l *logrus.Entry) {
-	var err error
-	logger = l
-	vpp = v
-
+func NewServer(v *vpplink.VppLink, rs *routing.Server, ss *services.Server, l *logrus.Entry) (*Server, error) {
 	lis, err := net.Listen("unix", config.CNIServerSocket)
 	if err != nil {
-		logger.Fatalf("failed to listen on %s: %v", config.CNIServerSocket, err)
+		l.Fatalf("failed to listen on %s: %v", config.CNIServerSocket, err)
+		return nil, err
 	}
-	grpcServer = grpc.NewServer()
-	pb.RegisterCniDataplaneServer(grpcServer, &server{})
-	logger.Infof("CNI server starting")
+	server := &Server{
+		vpp:            v,
+		log:            l,
+		routingServer:  rs,
+		servicesServer: ss,
+		socketListener: lis,
+		grpcServer:     grpc.NewServer(),
+	}
+	pb.RegisterCniDataplaneServer(server.grpcServer, server)
+	l.Infof("CNI server starting")
+	return server, nil
+}
 
-	if err := grpcServer.Serve(lis); err != nil {
-		logger.Fatalf("failed to serve: %v", err)
+func (s *Server) Serve() {
+	err := s.grpcServer.Serve(s.socketListener)
+	if err != nil {
+		s.log.Fatalf("failed to serve: %v", err)
 	}
 }
