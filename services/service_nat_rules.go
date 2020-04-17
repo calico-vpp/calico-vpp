@@ -86,15 +86,15 @@ func (s *Server) getServiceBackendIPs(servicePort *v1.ServicePort, ep *v1.Endpoi
 func (s *Server) addNat44NodePort(service *v1.Service, ep *v1.Endpoints) (err error) {
 	err = s.vpp.AddNat44Address(service.Spec.ClusterIP)
 	if err != nil {
-		return errors.Wrapf(err, "Error adding nat44 Nodeport address %s", service.Spec.ClusterIP)
+		s.log.Errorf("Error adding nat44 Nodeport address %s %+v", service.Spec.ClusterIP, err)
 	}
 	err = s.vpp.AddNat44OutsideInterface(config.DataInterfaceSwIfIndex)
 	if err != nil {
-		return errors.Wrap(err, "Error adding nat44 physical interface")
+		s.log.Errorf("Error adding nat44 physical interface %+v", err)
 	}
 	err = s.vpp.AddNat44OutsideInterface(s.vppTapSwIfindex)
 	if err != nil {
-		return errors.Wrap(err, "Error adding nat44 host-vpp tap interface")
+		s.log.Errorf("Error adding nat44 host-vpp tap interface %+v", err)
 	}
 	err = s.vpp.AddNat44InterfaceAddress(config.DataInterfaceSwIfIndex, types.NatTwice)
 	if err != nil {
@@ -164,15 +164,15 @@ func (s *Server) delNat44NodePort(service *v1.Service, ep *v1.Endpoints) (err er
 func (s *Server) addNat44ClusterIP(service *v1.Service, ep *v1.Endpoints) (err error) {
 	err = s.vpp.AddNat44Address(service.Spec.ClusterIP)
 	if err != nil {
-		return errors.Wrapf(err, "Error adding nat44 address %s", service.Spec.ClusterIP)
+		s.log.Errorf("Error adding nat44 address %s %+v", service.Spec.ClusterIP, err)
 	}
 	err = s.vpp.AddNat44OutsideInterface(config.DataInterfaceSwIfIndex)
 	if err != nil {
-		return errors.Wrap(err, "Error adding nat44 physical interface")
+		s.log.Errorf("Error adding nat44 physical interface %+v", err)
 	}
 	err = s.vpp.AddNat44OutsideInterface(s.vppTapSwIfindex)
 	if err != nil {
-		return errors.Wrap(err, "Error adding nat44 host-vpp tap interface")
+		s.log.Errorf("Error adding nat44 host-vpp tap interface %+v", err)
 	}
 	// For each port, build list of backends and add to VPP
 	for _, servicePort := range service.Spec.Ports {
