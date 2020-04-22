@@ -32,8 +32,9 @@ type ipipProvider struct {
 
 func newIPIPProvider(s *Server) (p *ipipProvider) {
 	p = &ipipProvider{
-		l: s.l.WithField("connectivity", "ipip"),
-		s: s,
+		ipipIfs: make(map[string]uint32),
+		l:       s.l.WithField("connectivity", "ipip"),
+		s:       s,
 	}
 	return p
 }
@@ -46,6 +47,7 @@ func (p ipipProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 b
 		if err != nil {
 			return errors.Wrapf(err, "Error getting node ip")
 		}
+		p.l.Infof("IPIP: Add %s->%s", nodeIP.String(), dst.IP.String())
 
 		swIfIndex, err := p.s.vpp.AddIpipTunnel(nodeIP, destNodeAddr, isV4, 0)
 		if err != nil {
@@ -76,6 +78,7 @@ func (p ipipProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 b
 			return errors.Wrapf(err, "Error setting ipip interface out for nat44")
 		}
 		p.ipipIfs[destNodeAddr.String()] = swIfIndex
+		p.l.Infof("IPIP: Added ?->%s %d", dst.IP.String(), swIfIndex)
 	}
 	swIfIndex := p.ipipIfs[destNodeAddr.String()]
 
@@ -92,6 +95,7 @@ func (p ipipProvider) delConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 b
 	if !found {
 		return errors.Errorf("Deleting unknown ipip tunnel %s", destNodeAddr.String())
 	}
+	p.l.Infof("IPIP: Del ?->%s %d", destNodeAddr.String(), swIfIndex)
 	err := p.s.vpp.RouteDel(&types.Route{
 		Dst:       &dst,
 		Gw:        nil,

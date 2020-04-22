@@ -248,7 +248,7 @@ func (s *Server) endpointAdded(ep *v1.Endpoints) error {
 }
 
 func (s *Server) endpointModified(ep *v1.Endpoints, old *v1.Endpoints) error {
-	s.log.Debugf("Endpoint %s/%s modified", ep.Namespace, ep.Name)
+	// s.log.Debugf("Endpoint %s/%s modified", ep.Namespace, ep.Name)
 	service := s.findMatchingService(ep)
 	if service == nil {
 		// Wait for matching endpoint to be added
@@ -286,7 +286,7 @@ func (s *Server) serviceAdded(service *v1.Service) error {
 }
 
 func (s *Server) serviceModified(service *v1.Service, old *v1.Service) error {
-	s.log.Debugf("Service %s/%s modified", service.Namespace, service.Name)
+	// s.log.Debugf("Service %s/%s modified", service.Namespace, service.Name)
 	ep := s.findMatchingEndpoint(service)
 	if ep == nil {
 		// Wait for matching endpoint to be added

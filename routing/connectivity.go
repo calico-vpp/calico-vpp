@@ -19,6 +19,7 @@ package routing
 import (
 	"fmt"
 	"net"
+	"os"
 
 	"github.com/pkg/errors"
 	calicov3 "github.com/projectcalico/libcalico-go/lib/apis/v3"
@@ -74,7 +75,9 @@ func (s *Server) updateIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bo
 	if err != nil {
 		return errors.Wrapf(err, "error checking for ipip tunnel")
 	}
-	if ipip {
+	if ipip && os.Getenv("CALICOVPP_IPSEC_ENABLED") != "" {
+		provider = s.ipsec
+	} else if ipip {
 		provider = s.ipip
 	}
 

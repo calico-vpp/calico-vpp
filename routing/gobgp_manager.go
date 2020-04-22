@@ -85,8 +85,9 @@ type Server struct {
 	vpp            *vpplink.VppLink
 	l              *logrus.Entry
 	// Connectivity providers
-	flat *flatL3Provider
-	ipip *ipipProvider
+	flat  *flatL3Provider
+	ipip  *ipipProvider
+	ipsec *ipsecProvider
 }
 
 func NewServer(vpp *vpplink.VppLink, l *logrus.Entry) (*Server, error) {
@@ -155,6 +156,7 @@ func NewServer(vpp *vpplink.VppLink, l *logrus.Entry) (*Server, error) {
 	}
 	server.flat = newFlatL3Provider(&server)
 	server.ipip = newIPIPProvider(&server)
+	server.ipsec = newIPsecProvider(&server)
 
 	BGPConf, err := server.getDefaultBGPConfig()
 	if err != nil {
