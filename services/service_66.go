@@ -80,7 +80,53 @@ func (p *Service66Provider) AnnounceLocalAddress(addr *net.IPNet, isWithdrawal b
 }
 
 func (p *Service66Provider) AddNodePort(service *v1.Service, ep *v1.Endpoints) (err error) {
-	return nil // TODO
+	clusterIPNet, err := getClusterIPNet(service)
+	if err != nil {
+		return errors.Wrapf(err, "Add clusterIP parse error")
+	}
+	_, nodeIPNet, err := p.s.getNodeIP()
+	if err != nil {
+		return errors.Wrap(err, "Error getting Node IP")
+	}
+	for _, servicePort := range service.Spec.Ports {
+		targetPort, err := getTargetPort(servicePort)
+		if err != nil {
+			p.log.Warnf("Error determinig target port: %v", err)
+			continue
+		}
+		proto := getServicePortProto(servicePort.Protocol)
+		err = p.vpp.CalicoAddVip(nodeIPNet, servicePort.Port, targetPort, true /* encapIsv6 */, proto)
+		if err != nil {
+			p.log.Errorf("Error Adding VIP %s %d->%d", nodeIPNet, servicePort.Port, targetPort)
+		}
+		err = p.vpp.CalicoAddVip(clusterIPNet, servicePort.Port, targetPort, true /* encapIsv6 */, proto)
+		if err != nil {
+			p.log.Errorf("Error Adding VIP %s %d->%d", clusterIPNet, servicePort.Port, targetPort)
+		}
+	}
+
+	// For each port, build list of backends and add to VPP
+	for _, servicePort := range service.Spec.Ports {
+		backendIPs := getServiceBackendIPs(&servicePort, ep)
+		p.log.Debugf("%d backends found for service %s/%s port %s", len(backendIPs),
+			service.Namespace, service.Name, servicePort.Name)
+		proto := getServicePortProto(servicePort.Protocol)
+		for _, backendIP := range backendIPs {
+			addr := net.ParseIP(backendIP)
+			if addr == nil {
+				p.log.Warnf("Error parsing target IP %s", addr)
+			}
+			err = p.vpp.CalicoAddAs(addr, nodeIPNet, servicePort.Port, proto)
+			if err != nil {
+				return errors.Wrapf(err, "Error adding AS %+v %+v:%d", backendIP, nodeIPNet, servicePort.Port)
+			}
+			err = p.vpp.CalicoAddAs(addr, clusterIPNet, servicePort.NodePort, proto)
+			if err != nil {
+				return errors.Wrapf(err, "Error adding AS %+v %+v:%d", backendIP, clusterIPNet, servicePort.NodePort)
+			}
+		}
+	}
+	return nil
 }
 
 func (p *Service66Provider) DelNodePort(service *v1.Service, ep *v1.Endpoints) (err error) {
