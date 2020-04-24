@@ -61,16 +61,36 @@ func main() {
 		return
 	}
 
-	go routing.Run(vpp, log.WithFields(logrus.Fields{"component": "routing"}))
+	routingServer, err := routing.NewServer(vpp, log.WithFields(logrus.Fields{"component": "routing"}))
+	if err != nil {
+		log.Errorf("Failed to create services server")
+		log.Fatal(err)
+	}
+	serviceServer, err := services.NewServer(vpp, log.WithFields(logrus.Fields{"component": "services"}))
+	if err != nil {
+		log.Errorf("Failed to create services server")
+		log.Fatal(err)
+	}
+	cniServer, err := cni.NewServer(
+		vpp,
+		routingServer,
+		serviceServer,
+		log.WithFields(logrus.Fields{"component": "cni"}),
+	)
+	if err != nil {
+		log.Errorf("Failed to create services server")
+		log.Fatal(err)
+	}
+	go routingServer.Serve()
 	<-routing.ServerRunning
 
-	go services.Run(vpp, log.WithFields(logrus.Fields{"component": "services"}))
-	go cni.Run(vpp, log.WithFields(logrus.Fields{"component": "cni"}))
+	go serviceServer.Serve()
+	go cniServer.Serve()
 
 	<-signalChannel
 	log.Infof("SIGINT received, exiting")
-	routing.GracefulStop()
-	cni.GracefulStop()
-	services.GracefulStop()
+	routingServer.Stop()
+	cniServer.Stop()
+	serviceServer.Stop()
 	vpp.Close()
 }

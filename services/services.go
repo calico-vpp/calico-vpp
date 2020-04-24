@@ -39,24 +39,32 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-var (
-	server *Server
-)
+type ServiceProvider interface {
+	Init() error
+	AddNodePort(service *v1.Service, ep *v1.Endpoints) error
+	DelNodePort(service *v1.Service, ep *v1.Endpoints) error
+	AddClusterIP(service *v1.Service, ep *v1.Endpoints) error
+	DelClusterIP(service *v1.Service, ep *v1.Endpoints) error
+	AnnounceLocalAddress(addr *net.IPNet, isWithdrawal bool) error
+	AnnounceContainerInterface(swIfIndex uint32, isWithdrawal bool) error
+}
 
 type Server struct {
-	t                tomb.Tomb
-	endpointStore    cache.Store
-	serviceStore     cache.Store
-	serviceInformer  cache.Controller
-	endpointInformer cache.Controller
-	clientv3         calicocliv3.Interface
-	nodeName         string
-	nodeIp           net.IP
-	nodeIpNet        *net.IPNet
-	lock             sync.Mutex
-	log              *logrus.Entry
-	vpp              *vpplink.VppLink
-	vppTapSwIfindex  uint32
+	t                 tomb.Tomb
+	endpointStore     cache.Store
+	serviceStore      cache.Store
+	serviceInformer   cache.Controller
+	endpointInformer  cache.Controller
+	clientv3          calicocliv3.Interface
+	nodeName          string
+	nodeIp            net.IP
+	nodeIpNet         *net.IPNet
+	lock              sync.Mutex
+	log               *logrus.Entry
+	vpp               *vpplink.VppLink
+	vppTapSwIfindex   uint32
+	service44Provider ServiceProvider
+	service66Provider ServiceProvider
 }
 
 func fetchVppTapSwifIndex() (swIfIndex uint32, err error) {
@@ -168,6 +176,9 @@ func NewServer(vpp *vpplink.VppLink, log *logrus.Entry) (*Server, error) {
 	server.serviceStore = serviceStore
 	server.serviceInformer = serviceInformer
 	server.endpointInformer = endpointInformer
+
+	server.service44Provider = newService44Provider(&server)
+	server.service66Provider = newService66Provider(&server)
 	return &server, nil
 }
 
@@ -281,7 +292,7 @@ func (s *Server) serviceModified(service *v1.Service, old *v1.Service) error {
 	s.log.Debugf("Found matching endpoint")
 	err := s.DelServiceNat(old, ep)
 	if err != nil {
-		s.log.Errorf("Deleting NAT config failed, trying to re-add anyway")
+		s.log.Errorf("Deleting NAT config failed, trying to re-add anyway : %+v", err)
 	}
 	return s.AddServiceNat(service, ep)
 }
@@ -303,22 +314,21 @@ func (s *Server) Serve() {
 		s.log.Errorf("cannot enable VPP NAT44 forwarding")
 		s.log.Fatal(err)
 	}
-
+	s.service44Provider.Init()
+	if err != nil {
+		s.log.Errorf("cannot init service44Provider forwarding")
+		s.log.Fatal(err)
+	}
+	s.service66Provider.Init()
+	if err != nil {
+		s.log.Errorf("cannot init service66Provider forwarding")
+		s.log.Fatal(err)
+	}
 	s.t.Go(func() error { s.serviceInformer.Run(s.t.Dying()); return nil })
 	s.t.Go(func() error { s.endpointInformer.Run(s.t.Dying()); return nil })
 	<-s.t.Dying()
 }
 
-func Run(vpp *vpplink.VppLink, log *logrus.Entry) {
-	_server, err := NewServer(vpp, log)
-	if err != nil {
-		log.Errorf("failed to create new server")
-		log.Fatal(err)
-	}
-	server = _server
-	server.Serve()
-}
-
-func GracefulStop() {
-	server.t.Kill(errors.Errorf("GracefulStop"))
+func (s *Server) Stop() {
+	s.t.Kill(errors.Errorf("GracefulStop"))
 }

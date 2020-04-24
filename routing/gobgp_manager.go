@@ -90,6 +90,18 @@ type Server struct {
 }
 
 func NewServer(vpp *vpplink.VppLink, l *logrus.Entry) (*Server, error) {
+	rawloglevel := os.Getenv("CALICO_BGP_LOGSEVERITYSCREEN")
+	if rawloglevel != "" {
+		loglevel, err := logrus.ParseLevel(rawloglevel)
+		if err != nil {
+			l.WithError(err).Error("Failed to parse BGP loglevel: %s, defaulting to info", rawloglevel)
+		} else {
+			l.Infof("Setting BGP log level to %s", rawloglevel)
+			logrus.SetLevel(loglevel) // This sets the log level for the GoBGP server
+			// This is separate from the level used by the logger in this package
+		}
+	}
+
 	nodeName := os.Getenv(config.NODENAME)
 	calicoCli, err := calicocli.NewFromEnv()
 	if err != nil {
@@ -748,7 +760,7 @@ func (s *Server) cleanUpRoutes() error {
 	return nil
 }
 
-func (s *Server) announceLocalAddress(addr net.IPNet) error {
+func (s *Server) announceLocalAddress(addr *net.IPNet) error {
 	s.l.Debugf("Announcing prefix %s in BGP", addr.String())
 	path, err := s.makePath(addr.String(), false)
 	if err != nil {
@@ -761,7 +773,7 @@ func (s *Server) announceLocalAddress(addr net.IPNet) error {
 	return errors.Wrap(err, "error announcing local address")
 }
 
-func (s *Server) withdrawLocalAddress(addr net.IPNet) error {
+func (s *Server) withdrawLocalAddress(addr *net.IPNet) error {
 	s.l.Debugf("Withdrawing prefix %s from BGP", addr.String())
 	path, err := s.makePath(addr.String(), true)
 	if err != nil {
@@ -774,38 +786,18 @@ func (s *Server) withdrawLocalAddress(addr net.IPNet) error {
 	return errors.Wrap(err, "error withdrawing local address")
 }
 
-func AnnounceLocalAddress(addr net.IPNet) error {
-	// Sync done by routing.ServerRunning
-	return server.announceLocalAddress(addr)
-}
-
-func WithdrawLocalAddress(addr net.IPNet) error {
-	// Sync done by routing.ServerRunning
-	return server.withdrawLocalAddress(addr)
-}
-
-func Run(vpp *vpplink.VppLink, l *logrus.Entry) {
-	rawloglevel := os.Getenv("CALICO_BGP_LOGSEVERITYSCREEN")
-	if rawloglevel != "" {
-		loglevel, err := logrus.ParseLevel(rawloglevel)
-		if err != nil {
-			l.WithError(err).Error("Failed to parse BGP loglevel: %s, defaulting to info", rawloglevel)
-		} else {
-			l.Infof("Setting BGP log level to %s", rawloglevel)
-			logrus.SetLevel(loglevel) // This sets the log level for the GoBGP server
-			// This is separate from the level used by the logger in this package
-		}
+func (s *Server) AnnounceLocalAddress(addr *net.IPNet, isWithdrawal bool) {
+	var err error
+	if isWithdrawal {
+		err = s.withdrawLocalAddress(addr)
+	} else {
+		err = s.announceLocalAddress(addr)
 	}
-
-	_server, err := NewServer(vpp, l)
 	if err != nil {
-		l.Errorf("failed to create new server")
-		l.Fatal(err)
+		s.l.Errorf("Local address %+v announcing failed : %+v", addr, err)
 	}
-	server = _server
-	server.Serve()
 }
 
-func GracefulStop() {
-	server.t.Kill(errors.Errorf("GracefulStop"))
+func (s *Server) Stop() {
+	s.t.Kill(errors.Errorf("GracefulStop"))
 }
