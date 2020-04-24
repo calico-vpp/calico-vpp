@@ -30,6 +30,7 @@ type Service44Provider struct {
 	log *logrus.Entry
 	vpp *vpplink.VppLink
 	s   *Server
+	nat44addressRefCnt map[string]int
 }
 
 func newService44Provider(s *Server) (p *Service44Provider) {
@@ -39,6 +40,23 @@ func newService44Provider(s *Server) (p *Service44Provider) {
 		s:   s,
 	}
 	return p
+}
+
+func (p *Service44Provider) Init() (err error) {
+	p.nat44addressRefCnt = make(map[string]int)
+	err = p.vpp.AddNat44OutsideInterface(config.DataInterfaceSwIfIndex)
+	if err != nil {
+		p.log.Errorf("Error set nat44 out PHY  %+v", err)
+	}
+	err = p.vpp.AddNat44InterfaceAddress(config.DataInterfaceSwIfIndex, types.NatTwice)
+	if err != nil {
+		p.log.Errorf("Error set nat44 in twice-nat PHY %+v", err)
+	}
+	err = p.vpp.AddNat44OutsideInterface(p.s.vppTapSwIfindex)
+	if err != nil {
+		p.log.Errorf("Error set nat44 out vpptap0 %+v", err)
+	}
+	return nil
 }
 
 func (p *Service44Provider) AnnounceContainerInterface(swIfIndex uint32, isWithdrawal bool) error {
@@ -57,29 +75,42 @@ func (p *Service44Provider) AnnounceLocalAddress(addr *net.IPNet, isWithdrawal b
 	return nil /* Nothing to do */
 }
 
+func (p *Service44Provider) addNATAddress(addr string) error {
+	if refCnt, ok := p.nat44addressRefCnt[addr]; ok {
+		p.nat44addressRefCnt[addr] = refCnt + 1
+	} else {
+		p.nat44addressRefCnt[addr] = 1
+		return p.vpp.AddNat44Address(addr)
+	}
+	return nil
+}
+
+func (p *Service44Provider) delNATAddress(addr string) error {
+	if refCnt, ok := p.nat44addressRefCnt[addr]; ok {
+		if refCnt > 1 {
+			p.nat44addressRefCnt[addr] = refCnt - 1
+		} else if refCnt == 1 {
+			delete(p.nat44addressRefCnt, addr)
+			return p.vpp.DelNat44Address(addr)
+		} else {
+			p.log.Errorf("Wrong refCnt : %d", refCnt)
+		}
+	} else {
+		p.log.Errorf("Address wasn't added : %s", addr)
+	}
+	return nil
+}
+
+
 func (p *Service44Provider) AddNodePort(service *v1.Service, ep *v1.Endpoints) (err error) {
-	err = p.vpp.AddNat44Address(service.Spec.ClusterIP)
+	err = p.addNATAddress(service.Spec.ClusterIP)
 	if err != nil {
 		p.log.Errorf("Error adding nat44 Nodeport address %s %+v", service.Spec.ClusterIP, err)
 	}
-	err = p.vpp.AddNat44OutsideInterface(config.DataInterfaceSwIfIndex)
-	if err != nil {
-		p.log.Errorf("Error adding nat44 physical interface %+v", err)
-	}
-	err = p.vpp.AddNat44OutsideInterface(p.s.vppTapSwIfindex)
-	if err != nil {
-		p.log.Errorf("Error adding nat44 host-vpp tap interface %+v", err)
-	}
-	err = p.vpp.AddNat44InterfaceAddress(config.DataInterfaceSwIfIndex, types.NatTwice)
-	if err != nil {
-		p.log.Errorf("Error adding nat44 physical interface address %+v", err)
-	}
-	p.log.Errorf("AAAAA : Getting nodeIp for name %s", p.s.nodeName)
 	nodeIp, _, err := p.s.getNodeIP()
 	if err != nil {
 		return errors.Wrap(err, "Error getting Node IP")
 	}
-	p.log.Errorf("AAAAA : nodeIp is %s", p.s.nodeIp.String())
 
 	for _, servicePort := range service.Spec.Ports {
 		backendIPs := getServiceBackendIPs(&servicePort, ep)
@@ -131,7 +162,7 @@ func (p *Service44Provider) DelNodePort(service *v1.Service, ep *v1.Endpoints) (
 		}
 	}
 
-	err = p.vpp.DelNat44Address(service.Spec.ClusterIP)
+	err = p.delNATAddress(service.Spec.ClusterIP)
 	if err != nil {
 		return errors.Wrap(err, "Error deleting nat44 address")
 	}
@@ -139,17 +170,9 @@ func (p *Service44Provider) DelNodePort(service *v1.Service, ep *v1.Endpoints) (
 }
 
 func (p *Service44Provider) AddClusterIP(service *v1.Service, ep *v1.Endpoints) (err error) {
-	err = p.vpp.AddNat44Address(service.Spec.ClusterIP)
+	err = p.addNATAddress(service.Spec.ClusterIP)
 	if err != nil {
 		p.log.Errorf("Error adding nat44 address %s %+v", service.Spec.ClusterIP, err)
-	}
-	err = p.vpp.AddNat44OutsideInterface(config.DataInterfaceSwIfIndex)
-	if err != nil {
-		p.log.Errorf("Error adding nat44 physical interface %+v", err)
-	}
-	err = p.vpp.AddNat44OutsideInterface(p.s.vppTapSwIfindex)
-	if err != nil {
-		p.log.Errorf("Error adding nat44 host-vpp tap interface %+v", err)
 	}
 	// For each port, build list of backends and add to VPP
 	for _, servicePort := range service.Spec.Ports {
@@ -164,7 +187,7 @@ func (p *Service44Provider) AddClusterIP(service *v1.Service, ep *v1.Endpoints) 
 			p.log.Warnf("Error determinig target port: %v", err)
 			continue
 		}
-		p.log.Errorf("BBBBB : %s:%d -> %+v :%d", service.Spec.ClusterIP, servicePort.Port, backendIPs, targetPort)
+		p.log.Infof("NAT: %s:%d -> %+v :%d", service.Spec.ClusterIP, servicePort.Port, backendIPs, targetPort)
 		err = p.vpp.AddNat44LB(service.Spec.ClusterIP, getServicePortProto(servicePort.Protocol),
 			servicePort.Port, backendIPs, targetPort)
 		if err != nil {
@@ -191,7 +214,7 @@ func (p *Service44Provider) DelClusterIP(service *v1.Service, ep *v1.Endpoints) 
 		}
 	}
 
-	err = p.vpp.DelNat44Address(service.Spec.ClusterIP)
+	err = p.delNATAddress(service.Spec.ClusterIP)
 	if err != nil {
 		return errors.Wrap(err, "Error deleting nat44 address")
 	}

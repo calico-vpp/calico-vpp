@@ -21,6 +21,8 @@ git.fd.io/govpp.git v0.1.0 h1:fV5H9ghURFfmNAjk7Scb/aG3OGwevLayHfSdS8GsYjE=
 git.fd.io/govpp.git v0.1.0/go.mod h1:+vyimAjILe5SYKjw4/WJ/8qPl9U5Qd9IT2v6b9VB83o=
 git.fd.io/govpp.git v0.2.0 h1:bBDRSJj4TtVjbVww5QGk0QAJEMkGNCLis9Nru2hCnPQ=
 git.fd.io/govpp.git v0.2.0/go.mod h1:cJ7XSNm8O4jeU1dLgOacRoHt5MxlL+XPgas1yBC53gc=
+git.fd.io/govpp.git v0.3.4 h1:IycjZ2GzvSvPiwy6+jKzhH18ySohGOILIVmWy3m5r2Q=
+git.fd.io/govpp.git v0.3.4/go.mod h1:SaURD+s2tyKdTyPdzAiHaoHwG6KEzIkPY1ZOdxU63qU=
 github.com/Azure/azure-sdk-for-go v32.5.0+incompatible/go.mod h1:9XXNKU+eRnpl9moKnB4QOLf1HestfXbmab5FXxiDBjc=
 github.com/Azure/go-ansiterm v0.0.0-20170929234023-d6e3b3328b78/go.mod h1:LmzpDX56iTiv29bbRTIsUNlaFfuhWRQBWjQdVyAevI8=
 github.com/Azure/go-autorest v10.6.2+incompatible/go.mod h1:r+4oMnoxhatjLLJ6zxSWATqVooLgysK6ZNox3g/xq24=
@@ -78,6 +80,7 @@ github.com/aws/aws-sdk-go v1.16.26/go.mod h1:KmX6BPdI08NWTb3/sm4ZGu5ShLoqVDhKgpi
 github.com/bazelbuild/bazel-gazelle v0.0.0-20181012220611-c728ce9f663e/go.mod h1:uHBSeeATKpVazAACZBDPL/Nk/UhQDDsJWDlqYJo8/Us=
 github.com/bazelbuild/buildtools v0.0.0-20180226164855-80c7f0d45d7e/go.mod h1:5JP0TXzWDHXv8qvxRC4InIazwdyDseBDbzESUMKk1yU=
 github.com/bennyscetbun/jsongo v0.0.0-20160422144625-5240b3f82c66/go.mod h1:suxbVmjBV8+A2BBAM5EYVh6Uj8j3rqJhzWf3hv7Ff8U=
+github.com/bennyscetbun/jsongo v1.1.0/go.mod h1:suxbVmjBV8+A2BBAM5EYVh6Uj8j3rqJhzWf3hv7Ff8U=
 github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973/go.mod h1:Dwedo/Wpr24TaqPxmxbtue+5NUziq4I4S80YR8gNf3Q=
 github.com/beorn7/perks v1.0.0 h1:HWo1m869IqiPhD389kmkxeTalrjNbbJTC8LXupb+sl0=
 github.com/beorn7/perks v1.0.0/go.mod h1:KWe93zE9D1o94FZ5RNwFwVgaQK1VOXiVxmqh+CedLV8=

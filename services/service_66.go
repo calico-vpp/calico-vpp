@@ -64,6 +64,10 @@ func getClusterIPNet(service *v1.Service) (*net.IPNet, error) {
 	}, nil
 }
 
+func (p *Service66Provider) Init() error {
+	return nil /* TODO */
+}
+
 func (p *Service66Provider) AnnounceContainerInterface(swIfIndex uint32, isWithdrawal bool) error {
 	return nil /* TODO */
 }

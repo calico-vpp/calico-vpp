@@ -3,7 +3,7 @@ module github.com/calico-vpp/calico-vpp
 go 1.12
 
 require (
-	git.fd.io/govpp.git v0.2.0
+	git.fd.io/govpp.git v0.3.4
 	github.com/armon/go-radix v1.0.0 // indirect
 	github.com/calico-vpp/vpplink v0.0.0-20200402143852-e4eec4bb38f3
 	github.com/containernetworking/plugins v0.8.2

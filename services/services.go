@@ -40,6 +40,7 @@ import (
 )
 
 type ServiceProvider interface {
+	Init() error
 	AddNodePort(service *v1.Service, ep *v1.Endpoints) error
 	DelNodePort(service *v1.Service, ep *v1.Endpoints) error
 	AddClusterIP(service *v1.Service, ep *v1.Endpoints) error
@@ -313,7 +314,16 @@ func (s *Server) Serve() {
 		s.log.Errorf("cannot enable VPP NAT44 forwarding")
 		s.log.Fatal(err)
 	}
-
+	s.service44Provider.Init()
+	if err != nil {
+		s.log.Errorf("cannot init service44Provider forwarding")
+		s.log.Fatal(err)
+	}
+	s.service66Provider.Init()
+	if err != nil {
+		s.log.Errorf("cannot init service66Provider forwarding")
+		s.log.Fatal(err)
+	}
 	s.t.Go(func() error { s.serviceInformer.Run(s.t.Dying()); return nil })
 	s.t.Go(func() error { s.endpointInformer.Run(s.t.Dying()); return nil })
 	<-s.t.Dying()
