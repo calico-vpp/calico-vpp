@@ -549,13 +549,13 @@ spec:
       serviceAccountName: calico-node
       # Minimize downtime during a rolling upgrade or deletion; tell Kubernetes to do a "force
       # deletion": https://kubernetes.io/docs/concepts/workloads/pods/pod/#termination-of-pods.
-      terminationGracePeriodSeconds: 0
+      terminationGracePeriodSeconds: 10
       priorityClassName: system-node-critical
       initContainers:
         # This container installs the CNI binaries
         # and CNI network config file on each node.
         - name: install-cni
-          image: calicovpp/cni:latest
+          image: calicovpp/cni:v0.4.0-calicov3.9.1
           command: ["/install-cni.sh"]
           env:
             # Name of the CNI config file to create.
@@ -598,7 +598,7 @@ spec:
         # container programs network policy and routes on each
         # host.
         - name: calico-node
-          image: calicovpp/node:latest
+          image: calicovpp/node:v0.4.0-calicov3.9.1
           env:
             # Use Kubernetes API as the backing datastore.
             - name: DATASTORE_TYPE
@@ -690,7 +690,7 @@ spec:
             - name: vpp-rundir
               mountPath: /var/run/vpp
         - name: vpp
-          image: calicovpp/vpp:latest
+          image: calicovpp/vpp:v0.4.0-calicov3.9.1
           securityContext:
             privileged: true
             capabilities:
