@@ -69,11 +69,14 @@ func (p *Service66Provider) Init() error {
 }
 
 func (p *Service66Provider) AnnounceContainerInterface(swIfIndex uint32, isWithdrawal bool) error {
-	return nil /* TODO */
+	if isWithdrawal {
+		return p.vpp.CalicoDelInterfaceNat6(swIfIndex)
+	}
+	return p.vpp.CalicoAddInterfaceNat6(swIfIndex)
 }
 
 func (p *Service66Provider) AnnounceLocalAddress(addr *net.IPNet, isWithdrawal bool) error {
-	return nil /* TODO */
+	return nil /* TODO : sourceNAT if needed */
 }
 
 func (p *Service66Provider) AddNodePort(service *v1.Service, ep *v1.Endpoints) (err error) {
@@ -95,7 +98,8 @@ func (p *Service66Provider) AddClusterIP(service *v1.Service, ep *v1.Endpoints) 
 			p.log.Warnf("Error determinig target port: %v", err)
 			continue
 		}
-		err = p.vpp.CalicoAddVip(clusterIPNet, servicePort.Port, targetPort, true /* encapIsv6 */)
+		proto := getServicePortProto(servicePort.Protocol)
+		err = p.vpp.CalicoAddVip(clusterIPNet, servicePort.Port, targetPort, true /* encapIsv6 */, proto)
 		if err != nil {
 			p.log.Errorf("Error Adding VIP %s %d->%d", clusterIPNet, servicePort.Port, targetPort)
 		}
@@ -111,8 +115,8 @@ func (p *Service66Provider) AddClusterIP(service *v1.Service, ep *v1.Endpoints) 
 			if addr == nil {
 				p.log.Warnf("Error parsing target IP %s", addr)
 			}
-			// TODO getServicePortProto(servicePort.Protocol)
-			err = p.vpp.CalicoAddAs(addr, clusterIPNet, servicePort.Port)
+			proto := getServicePortProto(servicePort.Protocol)
+			err = p.vpp.CalicoAddAs(addr, clusterIPNet, servicePort.Port, proto)
 			if err != nil {
 				return errors.Wrapf(err, "Error adding AS %+v %+v:%d", backendIP, clusterIPNet, servicePort.Port)
 			}
@@ -122,5 +126,41 @@ func (p *Service66Provider) AddClusterIP(service *v1.Service, ep *v1.Endpoints) 
 }
 
 func (p *Service66Provider) DelClusterIP(service *v1.Service, ep *v1.Endpoints) (err error) {
+	clusterIPNet, err := getClusterIPNet(service)
+	if err != nil {
+		return errors.Wrapf(err, "Add clusterIP parse error")
+	}
+
+	// For each port, build list of backends and add to VPP
+	for _, servicePort := range service.Spec.Ports {
+		backendIPs := getServiceBackendIPs(&servicePort, ep)
+		p.log.Debugf("%d backends found for service %s/%s port %s", len(backendIPs),
+			service.Namespace, service.Name, servicePort.Name)
+		for _, backendIP := range backendIPs {
+			addr := net.ParseIP(backendIP)
+			if addr == nil {
+				p.log.Warnf("Error parsing target IP %s", addr)
+			}
+			proto := getServicePortProto(servicePort.Protocol)
+			err = p.vpp.CalicoDelAs(addr, clusterIPNet, servicePort.Port, proto)
+			if err != nil {
+				return errors.Wrapf(err, "Error deleting AS %+v %+v:%d", backendIP, clusterIPNet, servicePort.Port)
+			}
+		}
+	}
+
+	for _, servicePort := range service.Spec.Ports {
+		targetPort, err := getTargetPort(servicePort)
+		if err != nil {
+			p.log.Warnf("Error determinig target port: %v", err)
+			continue
+		}
+		proto := getServicePortProto(servicePort.Protocol)
+		err = p.vpp.CalicoDelVip(clusterIPNet, servicePort.Port, targetPort, true /* encapIsv6 */, proto)
+		if err != nil {
+			p.log.Errorf("Error Deleting VIP %s %d->%d", clusterIPNet, servicePort.Port, targetPort)
+		}
+	}
+
 	return nil
 }
