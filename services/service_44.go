@@ -56,6 +56,10 @@ func (p *Service44Provider) Init() (err error) {
 	if err != nil {
 		p.log.Errorf("Error set nat44 out vpptap0 %+v", err)
 	}
+	err = p.vpp.AddNat44InsideInterface(p.s.vppTapSwIfindex)
+	if err != nil {
+		p.log.Errorf("Error set nat44 in vpptap0 %+v", err)
+	}
 	return nil
 }
 
