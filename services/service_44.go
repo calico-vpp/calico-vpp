@@ -27,9 +27,9 @@ import (
 )
 
 type Service44Provider struct {
-	log *logrus.Entry
-	vpp *vpplink.VppLink
-	s   *Server
+	log                *logrus.Entry
+	vpp                *vpplink.VppLink
+	s                  *Server
 	nat44addressRefCnt map[string]int
 }
 
@@ -104,7 +104,6 @@ func (p *Service44Provider) delNATAddress(addr string) error {
 	}
 	return nil
 }
-
 
 func (p *Service44Provider) AddNodePort(service *v1.Service, ep *v1.Endpoints) (err error) {
 	err = p.addNATAddress(service.Spec.ClusterIP)
