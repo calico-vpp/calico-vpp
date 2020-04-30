@@ -52,6 +52,19 @@ func getServicePortProto(proto v1.Protocol) types.IPProto {
 	}
 }
 
+func formatProto(proto types.IPProto) string {
+	switch proto {
+	case types.UDP:
+		return "UDP"
+	case types.SCTP:
+		return "SCTP"
+	case types.TCP:
+		return "TCP"
+	default:
+		return "???"
+	}
+}
+
 func getServiceBackendIPs(servicePort *v1.ServicePort, ep *v1.Endpoints) []string {
 	var backendIPs []string
 	for _, set := range ep.Subsets {

@@ -101,6 +101,10 @@ github.com/calico-vpp/vpplink v0.0.0-20200423162742-e79502facdf6 h1:0EhWuhMqBBEH
 github.com/calico-vpp/vpplink v0.0.0-20200423162742-e79502facdf6/go.mod h1:tQZQeD5jrPJoq8v/VpVl3WK/OMmEIJbOHIzUWoZW1QU=
 github.com/calico-vpp/vpplink v0.0.0-20200424124835-715fbbae958d h1:LRgzuQpCcsQcr7Frt+ajhSqdrdsuzVzSsCL1Vexznqg=
 github.com/calico-vpp/vpplink v0.0.0-20200424124835-715fbbae958d/go.mod h1:XTN1gO6hiGU5wsrufaFMODcu4Puaief2iRsj+V/iIYY=
+github.com/calico-vpp/vpplink v0.0.0-20200424163352-9c40724b360f h1:8k3CfnWhUH9zEu4qKhlQ92+UvzK2zXNdIWkM1ukdAKU=
+github.com/calico-vpp/vpplink v0.0.0-20200424163352-9c40724b360f/go.mod h1:XTN1gO6hiGU5wsrufaFMODcu4Puaief2iRsj+V/iIYY=
+github.com/calico-vpp/vpplink v0.0.0-20200428123446-9bf599b35164 h1:Ef25ofThhJw2hnwmbWa4B2F7dZdWLaVEk5yMDAUjLK0=
+github.com/calico-vpp/vpplink v0.0.0-20200428123446-9bf599b35164/go.mod h1:XTN1gO6hiGU5wsrufaFMODcu4Puaief2iRsj+V/iIYY=
 github.com/cenkalti/backoff v2.1.1+incompatible/go.mod h1:90ReRw6GdpyfrHakVjL/QHaoyV4aDUVVkXQJJJ3NXXM=
 github.com/cespare/prettybench v0.0.0-20150116022406-03b8cfe5406c/go.mod h1:Xe6ZsFhtM8HrDku0pxJ3/Lr51rwykrzgFwpmTzleatY=
 github.com/cespare/xxhash v1.1.0/go.mod h1:XrSqR1VqqWfGrhpAt58auRo0WTKS1nRRg3ghfAqPWnc=
