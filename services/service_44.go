@@ -32,7 +32,8 @@ type Service44Provider struct {
 	vpp                *vpplink.VppLink
 	s                  *Server
 	nat44addressRefCnt map[string]int
-	lock sync.Mutex
+	nat44backendIPmap  map[string]*types.Nat44Entry
+	lock               sync.Mutex
 }
 
 func newService44Provider(s *Server) (p *Service44Provider) {
@@ -46,6 +47,7 @@ func newService44Provider(s *Server) (p *Service44Provider) {
 
 func (p *Service44Provider) Init() (err error) {
 	p.nat44addressRefCnt = make(map[string]int)
+	p.nat44backendIPmap = make(map[string]*types.Nat44Entry)
 	err = p.vpp.AddNat44OutsideInterface(config.DataInterfaceSwIfIndex)
 	if err != nil {
 		p.log.Errorf("Error set nat44 out PHY  %+v", err)
@@ -87,7 +89,8 @@ func (p *Service44Provider) addNATAddress(addr string) error {
 	} else {
 		p.nat44addressRefCnt[addr] = 1
 		p.log.Infof("NAT: Adding address %s", addr)
-		return p.vpp.AddNat44Address(addr)
+		ip := net.ParseIP(addr)
+		return p.vpp.AddNat44Address(ip)
 	}
 	return nil
 }
@@ -99,12 +102,40 @@ func (p *Service44Provider) delNATAddress(addr string) error {
 		} else if refCnt == 1 {
 			delete(p.nat44addressRefCnt, addr)
 			p.log.Infof("NAT: Deleting address %s", addr)
-			return p.vpp.DelNat44Address(addr)
+			ip := net.ParseIP(addr)
+			return p.vpp.DelNat44Address(ip)
 		} else {
 			p.log.Errorf("Wrong refCnt : %d", refCnt)
 		}
 	} else {
 		p.log.Errorf("Address wasn't added : %s", addr)
+	}
+	return nil
+}
+
+func (p *Service44Provider) UpdateNodePort(service *v1.Service, ep *v1.Endpoints) (err error) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	p.log.Infof("NAT: Update ClusterIP")
+	for _, servicePort := range service.Spec.Ports {
+		entry, err := getServiceEntry(&servicePort, service, ep)
+		if err != nil {
+			p.log.Warnf("Error getting service entry: %v", err)
+			continue
+		}
+		previousEntry := p.nat44backendIPmap[servicePort.Name]
+		add, del := p.getAddedAndRemoved(entry, previousEntry)
+		p.log.Infof("NAT: (upd-del) %s", del.String())
+		err = p.vpp.DelNat44LB(del)
+		if err != nil {
+			return errors.Wrapf(err, "Error Updating(del) Nodeport %s", del.String())
+		}
+		p.log.Infof("NAT: (upd-add) %s", add.String())
+		err = p.vpp.AddNat44LB(add)
+		if err != nil {
+			return errors.Wrapf(err, "Error Updating(add) Nodeport %s", add.String())
+		}
+		p.nat44backendIPmap[servicePort.Name] = entry
 	}
 	return nil
 }
@@ -122,27 +153,18 @@ func (p *Service44Provider) AddNodePort(service *v1.Service, ep *v1.Endpoints) (
 		return errors.Wrap(err, "Error getting Node IP")
 	}
 	for _, servicePort := range service.Spec.Ports {
-		proto := getServicePortProto(servicePort.Protocol)
-		backendIPs := getServiceBackendIPs(&servicePort, ep)
-		p.log.Debugf("%d backends found for service %s/%s port %s",
-			len(backendIPs), service.Namespace, service.Name, servicePort.Name)
-		if len(backendIPs) == 0 {
-			continue
-		}
-		targetPort, err := getTargetPort(servicePort)
+		entry, err := getServiceEntry(&servicePort, service, ep)
+		npEntry := getNodePortEntry(entry, nodeIp)
+		p.log.Infof("NAT: (np) %s", entry.String())
+		err = p.vpp.AddNat44LB(entry)
 		if err != nil {
-			p.log.Warnf("Error determinig target port: %v", err)
-			continue
+			return errors.Wrapf(err, "Error adding NodePort %s", entry.String())
 		}
-		p.log.Infof("NAT: (np) %s %s:%d -> %+v :%d", formatProto(proto), nodeIp.String(), servicePort.Port, backendIPs, targetPort)
-		err = p.vpp.AddNat44LB(nodeIp.String(), proto, servicePort.Port, backendIPs, targetPort)
+		p.nat44backendIPmap[servicePort.Name] = entry
+		p.log.Infof("NAT: (np) %s", npEntry.String())
+		err = p.vpp.AddNat44LB(npEntry)
 		if err != nil {
-			return errors.Wrapf(err, "Error adding local NAT44 LB rule for NodePort %s", nodeIp.String())
-		}
-		p.log.Infof("NAT: (np) %s %s:%d -> %+v :%d", formatProto(proto), service.Spec.ClusterIP, servicePort.NodePort, backendIPs, targetPort)
-		err = p.vpp.AddNat44LB(service.Spec.ClusterIP, proto, servicePort.NodePort, backendIPs, targetPort)
-		if err != nil {
-			return errors.Wrapf(err, "Error adding external NAT44 LB rule for NodePort %s", service.Spec.ClusterIP)
+			return errors.Wrapf(err, "Error adding NodePort %s", npEntry.String())
 		}
 	}
 	return nil
@@ -157,27 +179,130 @@ func (p *Service44Provider) DelNodePort(service *v1.Service, ep *v1.Endpoints) (
 		return errors.Wrap(err, "Error getting Node IP")
 	}
 	for _, servicePort := range service.Spec.Ports {
-		proto := getServicePortProto(servicePort.Protocol)
-		backendIPs := getServiceBackendIPs(&servicePort, ep)
-		if len(backendIPs) == 0 {
-			continue
-		}
-		p.log.Infof("NAT: (del np) %s %s:%d -> %+v :?", formatProto(proto), nodeIp.String(), servicePort.Port, backendIPs)
-		err = p.vpp.DelNat44LB(nodeIp.String(), proto, servicePort.Port, len(backendIPs))
-		if err != nil {
-			return errors.Wrap(err, "Error deleting local NAT44 LB rule for NodePort")
-		}
+		entry := p.nat44backendIPmap[servicePort.Name]
+		delete(p.nat44backendIPmap, servicePort.Name)
+		npEntry := getNodePortEntry(entry, nodeIp)
 
-		p.log.Infof("NAT: (del np) %s %s:%d -> %+v :?", formatProto(proto), service.Spec.ClusterIP, servicePort.NodePort, backendIPs)
-		err = p.vpp.DelNat44LB(service.Spec.ClusterIP, proto, servicePort.NodePort, len(backendIPs))
+		p.log.Infof("NAT: (del np) %s", entry.String())
+		err = p.vpp.DelNat44LB(entry)
 		if err != nil {
-			return errors.Wrapf(err, "Error deleting external NAT44 LB rule for NodePort")
+			return errors.Wrapf(err, "Error deleting NodePort %s", entry.String())
+		}
+		p.log.Infof("NAT: (del np) %s", npEntry.String())
+		err = p.vpp.DelNat44LB(npEntry)
+		if err != nil {
+			return errors.Wrapf(err, "Error deleting NodePort %s", npEntry.String())
 		}
 	}
 
 	err = p.delNATAddress(service.Spec.ClusterIP)
 	if err != nil {
 		return errors.Wrap(err, "Error deleting nat44 address")
+	}
+	return nil
+}
+
+// func keys(m map[string]bool) []string {
+// 	keys := make([]string, 0, len(m))
+//     for k := range m {
+//         keys = append(keys, k)
+//     }
+//     return keys
+// }
+
+func lstToMap(lst []net.IP) map[string]bool {
+	newMap := make(map[string]bool)
+	for _, i := range lst {
+		newMap[i.String()] = true
+	}
+	return newMap
+}
+
+func (p *Service44Provider) getAddedAndRemoved(new *types.Nat44Entry, prev *types.Nat44Entry) (*types.Nat44Entry, *types.Nat44Entry) {
+	nl := len(new.BackendIPs)
+	pl := len(prev.BackendIPs)
+	if (nl == 1 && pl > 1) || (pl == 1 && nl > 1) {
+		// Change between 1:1 / LB need delete & add
+		return new, prev
+	}
+	if new.BackendPort != prev.BackendPort {
+		p.log.Infof("NAT: BackendPort changed for service")
+		return new, prev
+	}
+	if new.ServicePort != prev.ServicePort {
+		p.log.Infof("NAT: ServicePort changed for service")
+		return new, prev
+	}
+	if new.Protocol != prev.Protocol {
+		p.log.Infof("NAT: Protocol changed for service")
+		return new, prev
+	}
+
+	newMap := lstToMap(new.BackendIPs)
+	prevMap := lstToMap(prev.BackendIPs)
+	add := *new
+	del := *prev
+	add.BackendIPs = make([]net.IP, 0, nl)
+	del.BackendIPs = make([]net.IP, 0, pl)
+	for _, i := range new.BackendIPs {
+		if _, ok := prevMap[i.String()]; !ok {
+			add.BackendIPs = append(add.BackendIPs, i)
+		}
+	}
+	for _, i := range prev.BackendIPs {
+		if _, ok := newMap[i.String()]; !ok {
+			del.BackendIPs = append(del.BackendIPs, i)
+		}
+	}
+	return &add, &del
+}
+
+func getNodePortEntry(entry *types.Nat44Entry, nodeIp net.IP) *types.Nat44Entry {
+	npEntry := *entry
+	npEntry.ServiceIP = nodeIp
+	return &npEntry
+}
+
+func getServiceEntry(servicePort *v1.ServicePort, service *v1.Service, ep *v1.Endpoints) (entry *types.Nat44Entry, err error) {
+	proto := getServicePortProto(servicePort.Protocol)
+	targetPort, err := getTargetPort(*servicePort)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Error determinig target port")
+	}
+	backendIPs := getServiceBackendIPs(servicePort, ep)
+	clusterIP := net.ParseIP(service.Spec.ClusterIP)
+	return &types.Nat44Entry{
+		ServiceIP:   clusterIP,
+		ServicePort: servicePort.Port,
+		Protocol:    proto,
+		BackendIPs:  backendIPs,
+		BackendPort: targetPort,
+	}, nil
+}
+
+func (p *Service44Provider) UpdateClusterIP(service *v1.Service, ep *v1.Endpoints) (err error) {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	p.log.Infof("NAT: Update ClusterIP")
+	for _, servicePort := range service.Spec.Ports {
+		entry, err := getServiceEntry(&servicePort, service, ep)
+		if err != nil {
+			p.log.Warnf("Error getting service entry: %v", err)
+			continue
+		}
+		previousEntry := p.nat44backendIPmap[servicePort.Name]
+		add, del := p.getAddedAndRemoved(entry, previousEntry)
+		p.log.Infof("NAT: (upd-del) %s", del.String())
+		err = p.vpp.DelNat44LB(del)
+		if err != nil {
+			return errors.Wrapf(err, "Error Updating(del) clusterIP %s", del.String())
+		}
+		p.log.Infof("NAT: (upd-add) %s", add.String())
+		err = p.vpp.AddNat44LB(add)
+		if err != nil {
+			return errors.Wrapf(err, "Error Updating(add) clusterIP %s", add.String())
+		}
+		p.nat44backendIPmap[servicePort.Name] = entry
 	}
 	return nil
 }
@@ -190,25 +315,18 @@ func (p *Service44Provider) AddClusterIP(service *v1.Service, ep *v1.Endpoints) 
 	if err != nil {
 		p.log.Errorf("Error adding nat44 address %s %+v", service.Spec.ClusterIP, err)
 	}
-	// For each port, build list of backends and add to VPP
 	for _, servicePort := range service.Spec.Ports {
-		proto := getServicePortProto(servicePort.Protocol)
-		backendIPs := getServiceBackendIPs(&servicePort, ep)
-		p.log.Debugf("%d backends found for service %s/%s port %s", len(backendIPs),
-			service.Namespace, service.Name, servicePort.Name)
-		if len(backendIPs) == 0 {
+		entry, err := getServiceEntry(&servicePort, service, ep)
+		if err != nil {
+			p.log.Warnf("Error getting service entry: %v", err)
 			continue
 		}
-		targetPort, err := getTargetPort(servicePort)
+		p.log.Infof("NAT: %s", entry.String())
+		err = p.vpp.AddNat44LB(entry)
 		if err != nil {
-			p.log.Warnf("Error determinig target port: %v", err)
-			continue
+			return errors.Wrapf(err, "Error adding clusterIP %s", entry.String())
 		}
-		p.log.Infof("NAT: %s %s:%d -> %+v :%d", formatProto(proto), service.Spec.ClusterIP, servicePort.Port, backendIPs, targetPort)
-		err = p.vpp.AddNat44LB(service.Spec.ClusterIP, proto, servicePort.Port, backendIPs, targetPort)
-		if err != nil {
-			return errors.Wrapf(err, "Error adding nat44 clusterIP lb config to %s", service.Spec.ClusterIP)
-		}
+		p.nat44backendIPmap[servicePort.Name] = entry
 	}
 	return nil
 }
@@ -217,20 +335,13 @@ func (p *Service44Provider) DelClusterIP(service *v1.Service, ep *v1.Endpoints) 
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	p.log.Infof("NAT: Del ClusterIP")
-	// For each port, build list of backends and add to VPP
 	for _, servicePort := range service.Spec.Ports {
-		proto := getServicePortProto(servicePort.Protocol)
-		backendIPs := getServiceBackendIPs(&servicePort, ep)
-
-		p.log.Debugf("%d backends found for service %s/%s port %s", len(backendIPs),
-			service.Namespace, service.Name, servicePort.Name)
-		if len(backendIPs) == 0 {
-			continue
-		}
-		p.log.Infof("NAT: (del) %s %s:%d -> %+v :?", formatProto(proto), service.Spec.ClusterIP, servicePort.Port, backendIPs)
-		err = p.vpp.DelNat44LB(service.Spec.ClusterIP, proto, servicePort.Port, len(backendIPs))
+		entry := p.nat44backendIPmap[servicePort.Name]
+		delete(p.nat44backendIPmap, servicePort.Name)
+		p.log.Infof("NAT: (del) %s", entry.String())
+		err = p.vpp.DelNat44LB(entry)
 		if err != nil {
-			return errors.Wrap(err, "Error deleting nat44 lb config")
+			return errors.Wrapf(err, "Error deleting clusterIP %s", entry.String())
 		}
 	}
 

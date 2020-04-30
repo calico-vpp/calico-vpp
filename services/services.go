@@ -43,6 +43,8 @@ type ServiceProvider interface {
 	Init() error
 	AddNodePort(service *v1.Service, ep *v1.Endpoints) error
 	DelNodePort(service *v1.Service, ep *v1.Endpoints) error
+	UpdateNodePort(service *v1.Service, ep *v1.Endpoints) error
+	UpdateClusterIP(service *v1.Service, ep *v1.Endpoints) error
 	AddClusterIP(service *v1.Service, ep *v1.Endpoints) error
 	DelClusterIP(service *v1.Service, ep *v1.Endpoints) error
 	AnnounceLocalAddress(addr *net.IPNet, isWithdrawal bool) error
@@ -253,11 +255,12 @@ func (s *Server) endpointModified(ep *v1.Endpoints, old *v1.Endpoints) error {
 		return nil
 	}
 	s.log.Debugf("Found matching service")
-	err := s.DelServiceNat(service, old)
-	if err != nil {
-		s.log.Errorf("Deleting NAT config failed, trying to re-add anyway")
-	}
-	return s.AddServiceNat(service, ep)
+	return s.UpdateServiceNat(service, ep)
+	// err := s.DelServiceNat(service, old)
+	// if err != nil {
+	// 	s.log.Errorf("Deleting NAT config failed, trying to re-add anyway")
+	// }
+	// return s.AddServiceNat(service, ep)
 }
 
 func (s *Server) endpointRemoved(ep *v1.Endpoints) error {
@@ -290,11 +293,7 @@ func (s *Server) serviceModified(service *v1.Service, old *v1.Service) error {
 		return nil
 	}
 	s.log.Debugf("Found matching endpoint")
-	err := s.DelServiceNat(old, ep)
-	if err != nil {
-		s.log.Errorf("Deleting NAT config failed, trying to re-add anyway : %+v", err)
-	}
-	return s.AddServiceNat(service, ep)
+	return s.UpdateServiceNat(old, ep)
 }
 
 func (s *Server) serviceRemoved(service *v1.Service) error {

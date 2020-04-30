@@ -65,14 +65,16 @@ func formatProto(proto types.IPProto) string {
 	}
 }
 
-func getServiceBackendIPs(servicePort *v1.ServicePort, ep *v1.Endpoints) []string {
-	var backendIPs []string
+func getServiceBackendIPs(servicePort *v1.ServicePort, ep *v1.Endpoints) (backendIPs []net.IP) {
 	for _, set := range ep.Subsets {
 		// Check if this subset exposes the port we're interested in
 		for _, port := range set.Ports {
 			if servicePort.Name == port.Name {
 				for _, addr := range set.Addresses {
-					backendIPs = append(backendIPs, addr.IP)
+					ip := net.ParseIP(addr.IP)
+					if ip != nil {
+						backendIPs = append(backendIPs, ip)
+					}
 				}
 				break
 			}
@@ -100,6 +102,30 @@ func (s *Server) AnnounceContainerInterface(swIfIndex uint32, isWithdrawal bool)
 	err = s.service66Provider.AnnounceContainerInterface(swIfIndex, isWithdrawal)
 	if err != nil {
 		s.log.Errorf("Container interface %d announcing failed : %+v", swIfIndex, err)
+	}
+}
+
+func (s *Server) UpdateServiceNat(service *v1.Service, ep *v1.Endpoints) error {
+	if service == nil || ep == nil {
+		return errors.Errorf("nil service/endpoint, cannot process")
+	}
+	clusterIP := net.ParseIP(service.Spec.ClusterIP)
+	if clusterIP == nil {
+		s.log.Debugf("Service %s/%s has no IP, skipping", service.Namespace, service.Name)
+		return nil
+	}
+	serviceProvider := s.service44Provider
+	if vpplink.IsIP6(clusterIP) {
+		serviceProvider = s.service66Provider
+	}
+	switch service.Spec.Type {
+	case v1.ServiceTypeClusterIP:
+		return serviceProvider.UpdateClusterIP(service, ep)
+	case v1.ServiceTypeNodePort:
+		return serviceProvider.UpdateNodePort(service, ep)
+	default:
+		s.log.Debugf("service type creation not supported : %s", service.Spec.Type)
+		return nil
 	}
 }
 
