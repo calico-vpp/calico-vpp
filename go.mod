@@ -43,4 +43,3 @@ replace github.com/projectcalico/libcalico-go v1.7.3 => github.com/projectcalico
 
 replace github.com/osrg/gobgp v2.0.0+incompatible => github.com/osrg/gobgp v0.0.0-20191101114856-a42a1a5f6bf0
 
-replace github.com/calico-vpp/vpplink => ../vpplink
