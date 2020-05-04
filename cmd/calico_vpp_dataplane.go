@@ -49,7 +49,13 @@ func main() {
 	signalChannel := make(chan os.Signal, 2)
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
 
-	err := waitForVppManager()
+	err := config.LoadConfig()
+	if err != nil {
+		log.Errorf("Error loading configuration: %v", err)
+		return
+	}
+
+	err = waitForVppManager()
 	if err != nil {
 		log.Errorf("Vpp Manager not started: %v", err)
 		return

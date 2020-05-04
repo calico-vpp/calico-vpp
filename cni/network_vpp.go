@@ -374,6 +374,7 @@ func (s *Server) AddVppInterface(args *pb.AddRequest) (ifName, contTapMac string
 		Tag:            tapTag,
 		MacAddress:     vppSideMacAddress,
 		HostMacAddress: containerSideMacAddress,
+		RxQueues:       config.TapRXQueues,
 	})
 	if err != nil {
 		return "", "", s.tapErrorCleanup(contTapName, netns, err, "Error creating Tap")
