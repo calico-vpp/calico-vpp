@@ -15,6 +15,12 @@
 
 package config
 
+import (
+	"fmt"
+	"os"
+	"strconv"
+)
+
 const (
 	NODENAME               = "NODENAME"
 	DataInterfaceSwIfIndex = uint32(1) // Assumption: the VPP config ensures this is true
@@ -22,9 +28,25 @@ const (
 	VppAPISocket           = "/var/run/vpp/vpp-api.sock"
 	VppManagerStatusFile   = "/var/run/vpp/vppmanagerstatus"
 	VppManagerTapIdxFile   = "/var/run/vpp/vppmanagertap0"
+
+	VppSideMacAddressString       = "02:00:00:00:00:02"
+	ContainerSideMacAddressString = "02:00:00:00:00:01"
+
+	TapRXQueuesEnvVar = "CALICOVPP_TAP_RX_QUEUES"
 )
 
 var (
-	VppSideMacAddressString       = "02:00:00:00:00:02"
-	ContainerSideMacAddressString = "02:00:00:00:00:01"
+	TapRXQueues = 1
 )
+
+// LoadConfig loads the calico-vpp-agent configuration from the environment
+func LoadConfig() (err error) {
+	if conf := os.Getenv(TapRXQueuesEnvVar); conf != "" {
+		queues, err := strconv.ParseInt(conf, 10, 16)
+		if err != nil || queues <= 0 {
+			return fmt.Errorf("Invalid %s configuration: %s parses to %d err %v", TapRXQueuesEnvVar, conf, queues, err)
+		}
+		TapRXQueues = int(queues)
+	}
+	return nil
+}
