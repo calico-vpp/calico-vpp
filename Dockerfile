@@ -1,5 +1,6 @@
 FROM calico/node:v3.9.1
 
+ADD dep/gobgp /bin/gobgp
 ADD cmd/calico-vpp-agent /bin/calico-vpp-agent
 ADD etc/service/calico-vpp-agent /etc/service/available/calico-vpp-agent
 

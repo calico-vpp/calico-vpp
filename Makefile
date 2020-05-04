@@ -1,11 +1,15 @@
-.PHONY: all build image
+.PHONY: all build gobgp image
 
-all: build image
+all: build gobgp image
 
+export GOOS=linux
+GOBGP_DIR=$(shell go list -f '{{.Dir}}' -m github.com/osrg/gobgp)
 
 build:
-	GOOS=linux go build -o ./cmd/calico-vpp-agent ./cmd
+	go build -o ./cmd/calico-vpp-agent ./cmd
 
+gobgp:
+	go build -o ./dep/gobgp $(GOBGP_DIR)/cmd/gobgp/
 
-image: build
+image: build gobgp
 	docker build -t calicovpp/node:latest .
