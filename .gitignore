@@ -1,5 +1,5 @@
 cmd/calico-vpp-agent
-dep/gobpg
+dep/gobgp
 
 *.out
 *.test
