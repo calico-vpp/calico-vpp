@@ -33,10 +33,12 @@ const (
 	ContainerSideMacAddressString = "02:00:00:00:00:01"
 
 	TapRXQueuesEnvVar = "CALICOVPP_TAP_RX_QUEUES"
+	TapGSOEnvVar      = "CALICOVPP_TAP_GSO_ENABLED"
 )
 
 var (
-	TapRXQueues = 1
+	TapRXQueues   = 1
+	TapGSOEnabled = false
 )
 
 // LoadConfig loads the calico-vpp-agent configuration from the environment
@@ -47,6 +49,14 @@ func LoadConfig() (err error) {
 			return fmt.Errorf("Invalid %s configuration: %s parses to %d err %v", TapRXQueuesEnvVar, conf, queues, err)
 		}
 		TapRXQueues = int(queues)
+	}
+
+	if conf := os.Getenv(TapGSOEnvVar); conf != "" {
+		gso, err := strconv.ParseBool(conf)
+		if err != nil {
+			return fmt.Errorf("Invalid %s configuration: %s parses to %v err %v", TapGSOEnvVar, conf, gso, err)
+		}
+		TapGSOEnabled = gso
 	}
 	return nil
 }

@@ -368,14 +368,18 @@ func (s *Server) AddVppInterface(args *pb.AddRequest) (ifName, contTapMac string
 	}
 
 	// TODO: Clean up old tap if one is found with this tag
-	swIfIndex, err := s.vpp.CreateTapV2(&types.TapV2{
+	tap := &types.TapV2{
 		HostNamespace:  netns,
 		HostIfName:     contTapName,
 		Tag:            tapTag,
 		MacAddress:     vppSideMacAddress,
 		HostMacAddress: containerSideMacAddress,
 		RxQueues:       config.TapRXQueues,
-	})
+	}
+	if config.TapGSOEnabled {
+		tap.Flags |= types.TapFlagGSO
+	}
+	swIfIndex, err := s.vpp.CreateTapV2(tap)
 	if err != nil {
 		return "", "", s.tapErrorCleanup(contTapName, netns, err, "Error creating Tap")
 	}

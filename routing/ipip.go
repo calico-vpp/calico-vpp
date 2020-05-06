@@ -57,6 +57,13 @@ func (p ipipProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 b
 			return errors.Wrapf(err, "Error seting ipip tunnel unnumbered")
 		}
 
+		// Always enable GSO feature on IPIP tunnel, only a tiny negative effect on perf if GSO is not enabled on the taps
+		err = p.s.vpp.EnableGSOFeature(swIfIndex)
+		if err != nil {
+			// TODO : delete tunnel
+			return errors.Wrapf(err, "Error enabling gso for ipip interface")
+		}
+
 		err = p.s.vpp.InterfaceAdminUp(swIfIndex)
 		if err != nil {
 			// TODO : delete tunnel
