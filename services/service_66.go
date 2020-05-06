@@ -79,6 +79,16 @@ func (p *Service66Provider) AnnounceLocalAddress(addr *net.IPNet, isWithdrawal b
 	return nil /* TODO : sourceNAT if needed */
 }
 
+func (p *Service66Provider) UpdateNodePort(service *v1.Service, ep *v1.Endpoints) (err error) {
+	// TODO
+	return nil
+}
+
+func (p *Service66Provider) UpdateClusterIP(service *v1.Service, ep *v1.Endpoints) (err error) {
+	// TODO
+	return nil
+}
+
 func (p *Service66Provider) AddNodePort(service *v1.Service, ep *v1.Endpoints) (err error) {
 	clusterIPNet, err := getClusterIPNet(service)
 	if err != nil {
@@ -112,17 +122,13 @@ func (p *Service66Provider) AddNodePort(service *v1.Service, ep *v1.Endpoints) (
 			service.Namespace, service.Name, servicePort.Name)
 		proto := getServicePortProto(servicePort.Protocol)
 		for _, backendIP := range backendIPs {
-			addr := net.ParseIP(backendIP)
-			if addr == nil {
-				p.log.Warnf("Error parsing target IP %s", addr)
-			}
-			err = p.vpp.CalicoAddAs(addr, nodeIPNet, servicePort.Port, proto)
+			err = p.vpp.CalicoAddAs(backendIP, nodeIPNet, servicePort.Port, proto)
 			if err != nil {
-				return errors.Wrapf(err, "Error adding AS %+v %+v:%d", backendIP, nodeIPNet, servicePort.Port)
+				return errors.Wrapf(err, "Error adding AS %+v %+v:%d", backendIP.String(), nodeIPNet, servicePort.Port)
 			}
-			err = p.vpp.CalicoAddAs(addr, clusterIPNet, servicePort.NodePort, proto)
+			err = p.vpp.CalicoAddAs(backendIP, clusterIPNet, servicePort.NodePort, proto)
 			if err != nil {
-				return errors.Wrapf(err, "Error adding AS %+v %+v:%d", backendIP, clusterIPNet, servicePort.NodePort)
+				return errors.Wrapf(err, "Error adding AS %+v %+v:%d", backendIP.String(), clusterIPNet, servicePort.NodePort)
 			}
 		}
 	}
@@ -157,14 +163,10 @@ func (p *Service66Provider) AddClusterIP(service *v1.Service, ep *v1.Endpoints) 
 		p.log.Debugf("%d backends found for service %s/%s port %s", len(backendIPs),
 			service.Namespace, service.Name, servicePort.Name)
 		for _, backendIP := range backendIPs {
-			addr := net.ParseIP(backendIP)
-			if addr == nil {
-				p.log.Warnf("Error parsing target IP %s", addr)
-			}
 			proto := getServicePortProto(servicePort.Protocol)
-			err = p.vpp.CalicoAddAs(addr, clusterIPNet, servicePort.Port, proto)
+			err = p.vpp.CalicoAddAs(backendIP, clusterIPNet, servicePort.Port, proto)
 			if err != nil {
-				return errors.Wrapf(err, "Error adding AS %+v %+v:%d", backendIP, clusterIPNet, servicePort.Port)
+				return errors.Wrapf(err, "Error adding AS %+v %+v:%d", backendIP.String(), clusterIPNet, servicePort.Port)
 			}
 		}
 	}
@@ -183,14 +185,10 @@ func (p *Service66Provider) DelClusterIP(service *v1.Service, ep *v1.Endpoints) 
 		p.log.Debugf("%d backends found for service %s/%s port %s", len(backendIPs),
 			service.Namespace, service.Name, servicePort.Name)
 		for _, backendIP := range backendIPs {
-			addr := net.ParseIP(backendIP)
-			if addr == nil {
-				p.log.Warnf("Error parsing target IP %s", addr)
-			}
 			proto := getServicePortProto(servicePort.Protocol)
-			err = p.vpp.CalicoDelAs(addr, clusterIPNet, servicePort.Port, proto)
+			err = p.vpp.CalicoDelAs(backendIP, clusterIPNet, servicePort.Port, proto)
 			if err != nil {
-				return errors.Wrapf(err, "Error deleting AS %+v %+v:%d", backendIP, clusterIPNet, servicePort.Port)
+				return errors.Wrapf(err, "Error deleting AS %+v %+v:%d", backendIP.String(), clusterIPNet, servicePort.Port)
 			}
 		}
 	}
