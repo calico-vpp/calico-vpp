@@ -17,6 +17,8 @@ package routing
 
 import (
 	"net"
+	"os"
+	"strconv"
 
 	"github.com/calico-vpp/vpplink"
 	"github.com/calico-vpp/vpplink/types"
@@ -29,6 +31,28 @@ type flatL3Provider struct {
 	s *Server
 }
 
+func getRoutePaths(addr net.IP) []types.RoutePath {
+	extraAddressCount, _ := strconv.ParseInt(os.Getenv("CALICOVPP_IPSEC_ASSUME_EXTRA_ADDRESSES"), 10, 8)
+	extraAddressIncrement, _ := strconv.ParseInt(os.Getenv("CALICOVPP_IPSEC_EXTRA_ADDRESSES_INCREMENT"), 10, 8)
+	paths := make([]types.RoutePath, extraAddressCount+1)
+	paths = append(paths, types.RoutePath{
+		Gw:        addr,
+		SwIfIndex: vpplink.AnyInterface,
+		Table:     0,
+	})
+
+	for i := int64(0); i < 1+extraAddressCount; i++ {
+		naddr := net.IP(append([]byte(nil), addr.To4()...))
+		naddr[2] += byte(i * extraAddressIncrement)
+		paths = append(paths, types.RoutePath{
+			SwIfIndex: vpplink.AnyInterface,
+			Gw:        naddr,
+			Table:     0,
+		})
+	}
+	return paths
+}
+
 func newFlatL3Provider(s *Server) (p *flatL3Provider) {
 	p = &flatL3Provider{
 		l: s.l.WithField("connectivity", "flat"),
@@ -39,20 +63,20 @@ func newFlatL3Provider(s *Server) (p *flatL3Provider) {
 
 func (p *flatL3Provider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 bool) error {
 	p.l.Printf("adding route %s to VPP", dst.String())
+	paths := getRoutePaths(destNodeAddr)
 	err := p.s.vpp.RouteAdd(&types.Route{
-		Dst:       &dst,
-		Gw:        destNodeAddr,
-		SwIfIndex: vpplink.AnyInterface,
+		Paths: paths,
+		Dst:   &dst,
 	})
 	return errors.Wrap(err, "error replacing route")
 }
 
 func (p *flatL3Provider) delConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 bool) error {
 	p.l.Debugf("removing route %s from VPP", dst.String())
+	paths := getRoutePaths(destNodeAddr)
 	err := p.s.vpp.RouteDel(&types.Route{
-		Dst:       &dst,
-		Gw:        destNodeAddr,
-		SwIfIndex: vpplink.AnyInterface,
+		Paths: paths,
+		Dst:   &dst,
 	})
 	return errors.Wrap(err, "error deleting route")
 }

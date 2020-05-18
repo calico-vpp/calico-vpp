@@ -101,9 +101,11 @@ func (s *Server) SetupVppRoutes(swIfIndex uint32, ipConfigs []*pb.IPConfig) erro
 			ip.Mask = net.CIDRMask(128, 128)
 		}
 		err := s.vpp.RouteAdd(&types.Route{
-			Dst:       &ip,
-			Gw:        ip.IP,
-			SwIfIndex: swIfIndex,
+			Dst: &ip,
+			Paths: []types.RoutePath{{
+				SwIfIndex: swIfIndex,
+				Gw:        ip.IP,
+			}},
 		})
 		if err != nil {
 			return errors.Wrapf(err, "Cannot add route in VPP")
@@ -197,7 +199,7 @@ func (s *Server) announceLocalAddress(addr *net.IPNet, isWithdrawal bool) {
 }
 
 func (s *Server) announceContainerInterface(swIfIndex uint32, isWithdrawal bool) {
-	s.servicesServer.AnnounceContainerInterface(swIfIndex, isWithdrawal)
+	s.servicesServer.AnnounceInterface(swIfIndex, false /* isTunnel */, isWithdrawal)
 }
 
 func (s *Server) configureNamespaceSideTap(args *pb.AddRequest, swIfIndex uint32, contTapName string, contTapMac *string) func(hostNS ns.NetNS) error {
@@ -377,7 +379,7 @@ func (s *Server) AddVppInterface(args *pb.AddRequest) (ifName, contTapMac string
 		RxQueues:       config.TapRXQueues,
 	}
 	if config.TapGSOEnabled {
-		tap.Flags |= types.TapFlagGSO
+		tap.Flags |= types.TapFlagGSO | types.TapGROCoalesce
 	}
 	swIfIndex, err := s.vpp.CreateTapV2(tap)
 	if err != nil {
@@ -448,8 +450,12 @@ func (s *Server) delVppInterfaceHandleRoutes(swIfIndex uint32, isIPv6 bool) erro
 		return errors.Wrap(err, "GetRoutes errored")
 	}
 	for _, route := range routes {
+		// Our routes aren't multipath
+		if len(route.Paths) != 1 {
+			continue
+		}
 		// Filter routes we don't want to delete
-		if route.SwIfIndex != swIfIndex {
+		if route.Paths[0].SwIfIndex != swIfIndex {
 			continue // Routes on other interfaces
 		}
 		maskSize, _ := route.Dst.Mask.Size()

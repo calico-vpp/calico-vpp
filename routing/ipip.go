@@ -41,7 +41,6 @@ func newIPIPProvider(s *Server) (p *ipipProvider) {
 
 func (p ipipProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 bool) error {
 	p.l.Debugf("Adding ipip Tunnel to VPP")
-
 	if _, found := p.ipipIfs[destNodeAddr.String()]; !found {
 		nodeIP, _, err := p.s.getNodeIPNet()
 		if err != nil {
@@ -72,34 +71,37 @@ func (p ipipProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 b
 			return errors.Wrapf(err, "Error setting ipip interface up")
 		}
 
-		err = p.s.vpp.AddNat44OutsideInterface(swIfIndex)
-		if err != nil {
-			// TODO : delete tunnel
-			return errors.Wrapf(err, "Error setting ipip interface out for nat44")
-		}
+		p.s.servicesServer.AnnounceInterface(swIfIndex, true /* isTunnel */, false /* isWithdrawal */)
 		p.ipipIfs[destNodeAddr.String()] = swIfIndex
 		p.l.Infof("IPIP: Added ?->%s %d", dst.IP.String(), swIfIndex)
 	}
 	swIfIndex := p.ipipIfs[destNodeAddr.String()]
+	p.l.Infof("IPIP: Added ?->%s %d", dst.IP.String(), swIfIndex)
 
 	p.l.Debugf("Adding ipip tunnel route to %s via swIfIndex %d", dst.IP.String(), swIfIndex)
 	return p.s.vpp.RouteAdd(&types.Route{
-		Dst:       &dst,
-		Gw:        nil,
-		SwIfIndex: swIfIndex,
+		Dst: &dst,
+		Paths: []types.RoutePath{{
+			SwIfIndex: swIfIndex,
+			Gw:        nil,
+		}},
 	})
 }
 
 func (p ipipProvider) delConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 bool) error {
 	swIfIndex, found := p.ipipIfs[destNodeAddr.String()]
 	if !found {
+		p.l.Infof("IPIP: Del unknown %s", destNodeAddr.String())
 		return errors.Errorf("Deleting unknown ipip tunnel %s", destNodeAddr.String())
 	}
+	p.s.servicesServer.AnnounceInterface(swIfIndex, true /* isTunnel */, true /* isWithdrawal */)
 	p.l.Infof("IPIP: Del ?->%s %d", destNodeAddr.String(), swIfIndex)
 	err := p.s.vpp.RouteDel(&types.Route{
-		Dst:       &dst,
-		Gw:        nil,
-		SwIfIndex: swIfIndex,
+		Dst: &dst,
+		Paths: []types.RoutePath{{
+			SwIfIndex: swIfIndex,
+			Gw:        nil,
+		}},
 	})
 	if err != nil {
 		return errors.Wrapf(err, "Error deleting ipip tunnel route")

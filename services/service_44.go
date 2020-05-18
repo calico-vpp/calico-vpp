@@ -67,14 +67,21 @@ func (p *Service44Provider) Init() (err error) {
 	return nil
 }
 
-func (p *Service44Provider) AnnounceContainerInterface(swIfIndex uint32, isWithdrawal bool) error {
+func (p *Service44Provider) AnnounceInterface(swIfIndex uint32, isTunnel bool, isWithdrawal bool) error {
 	if isWithdrawal {
+		if !isTunnel {
+			err := p.vpp.DelNat44InsideInterface(swIfIndex)
+			if err != nil {
+				return errors.Wrapf(err, "Error deleting nat44 inside if %d", swIfIndex)
+			}
+		}
 		return p.vpp.DelNat44OutsideInterface(swIfIndex)
 	}
-	// server object might not already be initialized
-	err := p.vpp.AddNat44InsideInterface(swIfIndex)
-	if err != nil {
-		return errors.Wrapf(err, "Error adding nat44 inside if %d", swIfIndex)
+	if !isTunnel {
+		err := p.vpp.AddNat44InsideInterface(swIfIndex)
+		if err != nil {
+			return errors.Wrapf(err, "Error adding nat44 inside if %d", swIfIndex)
+		}
 	}
 	return p.vpp.AddNat44OutsideInterface(swIfIndex)
 }
@@ -290,17 +297,25 @@ func (p *Service44Provider) UpdateClusterIP(service *v1.Service, ep *v1.Endpoint
 			p.log.Warnf("Error getting service entry: %v", err)
 			continue
 		}
-		previousEntry := p.nat44backendIPmap[servicePort.Name]
-		add, del := p.getAddedAndRemoved(entry, previousEntry)
-		p.log.Infof("NAT: (upd-del) %s", del.String())
-		err = p.vpp.DelNat44LB(del)
-		if err != nil {
-			return errors.Wrapf(err, "Error Updating(del) clusterIP %s", del.String())
-		}
-		p.log.Infof("NAT: (upd-add) %s", add.String())
-		err = p.vpp.AddNat44LB(add)
-		if err != nil {
-			return errors.Wrapf(err, "Error Updating(add) clusterIP %s", add.String())
+		previousEntry, ok := p.nat44backendIPmap[servicePort.Name]
+		if ok {
+			add, del := p.getAddedAndRemoved(entry, previousEntry)
+			p.log.Infof("NAT: (upd-del) %s", del.String())
+			err = p.vpp.DelNat44LB(del)
+			if err != nil {
+				return errors.Wrapf(err, "Error Updating(del) clusterIP %s", del.String())
+			}
+			p.log.Infof("NAT: (upd-add) %s", add.String())
+			err = p.vpp.AddNat44LB(add)
+			if err != nil {
+				return errors.Wrapf(err, "Error Updating(add) clusterIP %s", add.String())
+			}
+		} else {
+			p.log.Infof("NAT: (upd-add) %s", entry.String())
+			err = p.vpp.AddNat44LB(entry)
+			if err != nil {
+				return errors.Wrapf(err, "Error Updating(add) clusterIP %s", entry.String())
+			}
 		}
 		p.nat44backendIPmap[servicePort.Name] = entry
 	}

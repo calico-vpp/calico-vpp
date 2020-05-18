@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/calico-vpp/calico-vpp/config"
+	"github.com/calico-vpp/calico-vpp/services"
 	"github.com/golang/protobuf/ptypes"
 	"github.com/golang/protobuf/ptypes/any"
 	bgpapi "github.com/osrg/gobgp/api"
@@ -84,13 +85,14 @@ type Server struct {
 	prefixReady    chan int
 	vpp            *vpplink.VppLink
 	l              *logrus.Entry
+	servicesServer *services.Server
 	// Connectivity providers
 	flat  *flatL3Provider
 	ipip  *ipipProvider
 	ipsec *ipsecProvider
 }
 
-func NewServer(vpp *vpplink.VppLink, l *logrus.Entry) (*Server, error) {
+func NewServer(vpp *vpplink.VppLink, ss *services.Server, l *logrus.Entry) (*Server, error) {
 	rawloglevel := os.Getenv("CALICO_BGP_LOGSEVERITYSCREEN")
 	if rawloglevel != "" {
 		loglevel, err := logrus.ParseLevel(rawloglevel)
@@ -141,18 +143,19 @@ func NewServer(vpp *vpplink.VppLink, l *logrus.Entry) (*Server, error) {
 	)
 
 	server := Server{
-		bgpServer:   bgpServer,
-		client:      calicoCli,
-		clientv3:    calicoCliV3,
-		nodeName:    nodeName,
-		hasV4:       hasV4,
-		ipv4:        ipv4,
-		hasV6:       hasV6,
-		ipv6:        ipv6,
-		reloadCh:    make(chan string),
-		prefixReady: make(chan int),
-		vpp:         vpp,
-		l:           l,
+		bgpServer:      bgpServer,
+		client:         calicoCli,
+		clientv3:       calicoCliV3,
+		nodeName:       nodeName,
+		hasV4:          hasV4,
+		ipv4:           ipv4,
+		hasV6:          hasV6,
+		ipv6:           ipv6,
+		reloadCh:       make(chan string),
+		prefixReady:    make(chan int),
+		vpp:            vpp,
+		l:              l,
+		servicesServer: ss,
 	}
 	server.flat = newFlatL3Provider(&server)
 	server.ipip = newIPIPProvider(&server)

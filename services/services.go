@@ -48,7 +48,7 @@ type ServiceProvider interface {
 	AddClusterIP(service *v1.Service, ep *v1.Endpoints) error
 	DelClusterIP(service *v1.Service, ep *v1.Endpoints) error
 	AnnounceLocalAddress(addr *net.IPNet, isWithdrawal bool) error
-	AnnounceContainerInterface(swIfIndex uint32, isWithdrawal bool) error
+	AnnounceInterface(swIfIndex uint32, isTunnel bool, isWithdrawal bool) error
 }
 
 type Server struct {
@@ -85,11 +85,11 @@ func fetchVppTapSwifIndex() (swIfIndex uint32, err error) {
 
 func NewServer(vpp *vpplink.VppLink, log *logrus.Entry) (*Server, error) {
 	nodeName := os.Getenv(config.NODENAME)
-	config, err := rest.InClusterConfig()
+	clusterConfig, err := rest.InClusterConfig()
 	if err != nil {
 		panic(err.Error())
 	}
-	client, err := kubernetes.NewForConfig(config)
+	client, err := kubernetes.NewForConfig(clusterConfig)
 	if err != nil {
 		panic(err.Error())
 	}
@@ -179,8 +179,13 @@ func NewServer(vpp *vpplink.VppLink, log *logrus.Entry) (*Server, error) {
 	server.serviceInformer = serviceInformer
 	server.endpointInformer = endpointInformer
 
-	server.service44Provider = newService44Provider(&server)
-	server.service66Provider = newService66Provider(&server)
+	if config.EnableServices {
+		server.service44Provider = newService44Provider(&server)
+		server.service66Provider = newService66Provider(&server)
+	} else {
+		server.service44Provider = newService00Provider(&server)
+		server.service66Provider = newService00Provider(&server)
+	}
 	return &server, nil
 }
 
@@ -308,17 +313,19 @@ func (s *Server) serviceRemoved(service *v1.Service) error {
 }
 
 func (s *Server) Serve() {
-	err := s.vpp.EnableNatForwarding()
-	if err != nil {
-		s.log.Errorf("cannot enable VPP NAT44 forwarding")
-		s.log.Fatal(err)
+	if config.EnableServices {
+		err := s.vpp.EnableNatForwarding()
+		if err != nil {
+			s.log.Errorf("cannot enable VPP NAT44 forwarding")
+			s.log.Fatal(err)
+		}
 	}
-	s.service44Provider.Init()
+	err := s.service44Provider.Init()
 	if err != nil {
 		s.log.Errorf("cannot init service44Provider forwarding")
 		s.log.Fatal(err)
 	}
-	s.service66Provider.Init()
+	err = s.service66Provider.Init()
 	if err != nil {
 		s.log.Errorf("cannot init service66Provider forwarding")
 		s.log.Fatal(err)

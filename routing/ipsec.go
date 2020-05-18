@@ -91,11 +91,7 @@ func (p ipsecProvider) setupOneTunnel(src, dst net.IP, psk string) (tunSwIfIndex
 		return 0, errors.Wrapf(err, "Error adding ipip tunnel %s -> %s", src.String(), dst.String())
 	}
 
-	err = p.s.vpp.AddNat44OutsideInterface(swIfIndex)
-	if err != nil {
-		// TODO : delete tunnel
-		return 0, errors.Wrapf(err, "Error setting ipip interface out for nat44")
-	}
+	p.s.servicesServer.AnnounceInterface(swIfIndex, true /* isTunnel */, false /* isWithdrawal */)
 	p.l.Infof("ipip tunnel from %s to %s created with index %d", src.String(), dst.String(), swIfIndex)
 
 	err = p.s.vpp.InterfaceSetUnnumbered(swIfIndex, config.DataInterfaceSwIfIndex)
@@ -196,12 +192,19 @@ func (p ipsecProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 
 		}
 	}
 	swIfIndices := p.ipipIfs[destNodeAddr.String()]
+	paths := make([]types.RoutePath, len(swIfIndices))
+	for _, swIfIndex := range swIfIndices {
+		paths = append(paths, types.RoutePath{
+			Gw:        nil,
+			Table:     0,
+			SwIfIndex: swIfIndex,
+		})
+	}
 
 	p.l.Debugf("Adding ipip tunnel route to %s via swIfIndices %v", dst.IP.String(), swIfIndices)
-	e := p.s.vpp.RouteMAdd(&types.MRoute{
-		Dst:       &dst,
-		Gw:        nil,
-		SwIfIndex: swIfIndices,
+	e := p.s.vpp.RouteAdd(&types.Route{
+		Dst:   &dst,
+		Paths: paths,
 	})
 	if e != nil {
 		err = e
@@ -215,10 +218,17 @@ func (p ipsecProvider) delConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 
 	if !found {
 		return errors.Errorf("Deleting unknown ipip tunnel %s", destNodeAddr.String())
 	}
-	e := p.s.vpp.RouteMDel(&types.MRoute{
-		Dst:       &dst,
-		Gw:        nil,
-		SwIfIndex: swIfIndices,
+	paths := make([]types.RoutePath, len(swIfIndices))
+	for _, swIfIndex := range swIfIndices {
+		paths = append(paths, types.RoutePath{
+			Gw:        nil,
+			Table:     0,
+			SwIfIndex: swIfIndex,
+		})
+	}
+	e := p.s.vpp.RouteDel(&types.Route{
+		Dst:   &dst,
+		Paths: paths,
 	})
 	if e != nil {
 		err = e
