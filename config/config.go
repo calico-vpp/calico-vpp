@@ -34,6 +34,8 @@ const (
 
 	TapRXQueuesEnvVar = "CALICOVPP_TAP_RX_QUEUES"
 	TapGSOEnvVar      = "CALICOVPP_TAP_GSO_ENABLED"
+
+	EnableServices = false
 )
 
 var (

@@ -723,6 +723,8 @@ spec:
                   key: service_prefix
             - name: CALICOVPP_CONFIGURE_EXTRA_ADDRESSES
               value: "1"
+            - name: CALICOVPP_EXTRA_ADDRESSES_INCREMENT
+              value: "10"
             # Use Kubernetes API as the backing datastore.
             - name: DATASTORE_TYPE
               value: "kubernetes"

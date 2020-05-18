@@ -68,7 +68,7 @@ func (p *Service66Provider) Init() error {
 	return nil /* TODO */
 }
 
-func (p *Service66Provider) AnnounceContainerInterface(swIfIndex uint32, isWithdrawal bool) error {
+func (p *Service66Provider) AnnounceInterface(swIfIndex uint32, isTunnel bool, isWithdrawal bool) error {
 	if isWithdrawal {
 		return p.vpp.CalicoDelInterfaceNat6(swIfIndex)
 	}

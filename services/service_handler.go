@@ -94,12 +94,12 @@ func (s *Server) AnnounceLocalAddress(addr *net.IPNet, isWithdrawal bool) {
 	}
 }
 
-func (s *Server) AnnounceContainerInterface(swIfIndex uint32, isWithdrawal bool) {
-	err := s.service44Provider.AnnounceContainerInterface(swIfIndex, isWithdrawal)
+func (s *Server) AnnounceInterface(swIfIndex uint32, isTunnel bool, isWithdrawal bool) {
+	err := s.service44Provider.AnnounceInterface(swIfIndex, isTunnel, isWithdrawal)
 	if err != nil {
 		s.log.Errorf("Container interface %d announcing failed : %+v", swIfIndex, err)
 	}
-	err = s.service66Provider.AnnounceContainerInterface(swIfIndex, isWithdrawal)
+	err = s.service66Provider.AnnounceInterface(swIfIndex, isTunnel, isWithdrawal)
 	if err != nil {
 		s.log.Errorf("Container interface %d announcing failed : %+v", swIfIndex, err)
 	}
