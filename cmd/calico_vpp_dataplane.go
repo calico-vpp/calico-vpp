@@ -49,7 +49,7 @@ func main() {
 	signalChannel := make(chan os.Signal, 2)
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
 
-	err := config.LoadConfig()
+	err := config.LoadConfig(log)
 	if err != nil {
 		log.Errorf("Error loading configuration: %v", err)
 		return

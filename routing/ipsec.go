@@ -18,8 +18,6 @@ package routing
 import (
 	"bytes"
 	"net"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -62,20 +60,13 @@ func (p ipsecProvider) setupTunnels(destNodeAddr net.IP, isV4 bool) (err error) 
 		return errors.New("IPv6 not supported with IPsec at this time")
 	}
 
-	psk := os.Getenv("CALICOVPP_IPSEC_IKEV2_PSK")
-	if psk == "" {
-		return errors.New("IKEv2 PSK not configured: nothing found in CALICOVPP_IPSEC_IKEV2_PSK environment variable")
-	}
-
-	extraAddressCount, _ := strconv.ParseInt(os.Getenv("CALICOVPP_IPSEC_ASSUME_EXTRA_ADDRESSES"), 10, 8)
-
-	for i := int64(0); i < 1+extraAddressCount; i++ {
+	for i := 0; i < config.ExtraAddressCount; i++ {
 		src := net.IP(append([]byte(nil), nodeIP.To4()...))
 		src[2] += byte(i)
 		dst := net.IP(append([]byte(nil), destNodeAddr.To4()...))
 		dst[2] += byte(i)
 		p.l.Infof("Adding IPsec tunnel from %s to %s", src, dst)
-		swIfIndex, err := p.setupOneTunnel(src, dst, psk)
+		swIfIndex, err := p.setupOneTunnel(src, dst, config.IPSecIkev2Psk)
 		if err != nil {
 			return errors.Wrapf(err, "error configuring ipsec tunnel from %s to %s", src.String(), dst.String())
 		}
