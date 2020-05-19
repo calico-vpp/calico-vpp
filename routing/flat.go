@@ -17,9 +17,8 @@ package routing
 
 import (
 	"net"
-	"os"
-	"strconv"
 
+	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/vpplink"
 	"github.com/calico-vpp/vpplink/types"
 	"github.com/pkg/errors"
@@ -32,18 +31,16 @@ type flatL3Provider struct {
 }
 
 func getRoutePaths(addr net.IP) []types.RoutePath {
-	extraAddressCount, _ := strconv.ParseInt(os.Getenv("CALICOVPP_IPSEC_ASSUME_EXTRA_ADDRESSES"), 10, 8)
-	extraAddressIncrement, _ := strconv.ParseInt(os.Getenv("CALICOVPP_IPSEC_EXTRA_ADDRESSES_INCREMENT"), 10, 8)
-	paths := make([]types.RoutePath, extraAddressCount+1)
+	paths := make([]types.RoutePath, config.ExtraAddressCount)
 	paths = append(paths, types.RoutePath{
 		Gw:        addr,
 		SwIfIndex: vpplink.AnyInterface,
 		Table:     0,
 	})
 
-	for i := int64(0); i < 1+extraAddressCount; i++ {
+	for i := 0; i < config.ExtraAddressCount; i++ {
 		naddr := net.IP(append([]byte(nil), addr.To4()...))
-		naddr[2] += byte(i * extraAddressIncrement)
+		naddr[2] += byte(i)
 		paths = append(paths, types.RoutePath{
 			SwIfIndex: vpplink.AnyInterface,
 			Gw:        naddr,
