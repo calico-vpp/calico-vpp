@@ -31,7 +31,7 @@ type flatL3Provider struct {
 }
 
 func getRoutePaths(addr net.IP) []types.RoutePath {
-	paths := make([]types.RoutePath, config.ExtraAddressCount)
+	paths := make([]types.RoutePath, 0, config.ExtraAddressCount)
 	paths = append(paths, types.RoutePath{
 		Gw:        addr,
 		SwIfIndex: vpplink.AnyInterface,

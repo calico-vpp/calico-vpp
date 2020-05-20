@@ -180,7 +180,7 @@ func NewServer(vpp *vpplink.VppLink, log *logrus.Entry) (*Server, error) {
 	server.endpointInformer = endpointInformer
 
 	if config.EnableServices {
-		server.service44Provider = newService44Provider(&server)
+		server.service44Provider = newCalicoServiceProvider(&server)
 		server.service66Provider = newService66Provider(&server)
 	} else {
 		server.service44Provider = newService00Provider(&server)
@@ -313,13 +313,6 @@ func (s *Server) serviceRemoved(service *v1.Service) error {
 }
 
 func (s *Server) Serve() {
-	if config.EnableServices {
-		err := s.vpp.EnableNatForwarding()
-		if err != nil {
-			s.log.Errorf("cannot enable VPP NAT44 forwarding")
-			s.log.Fatal(err)
-		}
-	}
 	err := s.service44Provider.Init()
 	if err != nil {
 		s.log.Errorf("cannot init service44Provider forwarding")
