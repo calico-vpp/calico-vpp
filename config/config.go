@@ -20,6 +20,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/calico-vpp/vpplink/types"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -38,9 +39,11 @@ const (
 	TapRXQueuesEnvVar         = "CALICOVPP_TAP_RX_QUEUES"
 	TapGSOEnvVar              = "CALICOVPP_TAP_GSO_ENABLED"
 	EnableServicesEnvVar      = "CALICOVPP_NAT_ENABLED"
+	CrossIpsecTunnelsEnvVar   = "CALICOVPP_IPSEC_CROSS_TUNNELS"
 	EnableIPSecEnvVar         = "CALICOVPP_IPSEC_ENABLED"
 	IPSecExtraAddressesEnvVar = "CALICOVPP_IPSEC_ASSUME_EXTRA_ADDRESSES"
 	IPSecIkev2PskEnvVar       = "CALICOVPP_IPSEC_IKEV2_PSK"
+	TapRxModeEnvVar           = "CALICOVPP_TAP_RX_MODE"
 )
 
 var (
@@ -49,7 +52,9 @@ var (
 	EnableServices    = false
 	EnableIPSec       = false
 	ExtraAddressCount = 1
+	CrossIpsecTunnels = false
 	IPSecIkev2Psk     = ""
+	TapRxMode         = types.DefaultRxMode
 )
 
 // LoadConfig loads the calico-vpp-agent configuration from the environment
@@ -78,6 +83,14 @@ func LoadConfig(log *logrus.Logger) (err error) {
 		EnableIPSec = enableIPSec
 	}
 
+	if conf := os.Getenv(CrossIpsecTunnelsEnvVar); conf != "" {
+		crossIpsecTunnels, err := strconv.ParseBool(conf)
+		if err != nil {
+			return fmt.Errorf("Invalid %s configuration: %s parses to %v err %v", CrossIpsecTunnelsEnvVar, conf, crossIpsecTunnels, err)
+		}
+		CrossIpsecTunnels = crossIpsecTunnels
+	}
+
 	if conf := os.Getenv(EnableServicesEnvVar); conf != "" {
 		enableServices, err := strconv.ParseBool(conf)
 		if err != nil {
@@ -100,11 +113,24 @@ func LoadConfig(log *logrus.Logger) (err error) {
 	}
 	IPSecIkev2Psk = psk
 
+	switch os.Getenv(TapRxModeEnvVar) {
+	case "interrupt":
+		TapRxMode = types.Interrupt
+	case "polling":
+		TapRxMode = types.Polling
+	case "adaptive":
+		TapRxMode = types.Adaptative
+	default:
+		TapRxMode = types.DefaultRxMode
+	}
+
 	log.Infof("Config:TapRXQueues       %d", TapRXQueues)
 	log.Infof("Config:TapGSOEnabled     %t", TapGSOEnabled)
 	log.Infof("Config:EnableServices    %t", EnableServices)
 	log.Infof("Config:EnableIPSec       %t", EnableIPSec)
+	log.Infof("Config:CrossIpsecTunnels %t", CrossIpsecTunnels)
 	log.Infof("Config:ExtraAddressCount %d", ExtraAddressCount)
+	log.Infof("Config:RxMode            %d", TapRxMode)
 
 	return nil
 }

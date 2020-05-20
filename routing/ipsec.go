@@ -50,6 +50,20 @@ func profileName(srcNodeAddr, destNodeAddr net.IP) string {
 	return "pr_" + ipToSafeString(srcNodeAddr) + "_to_" + ipToSafeString(destNodeAddr)
 }
 
+func (p ipsecProvider) setupTunnelWithIds(i int, j int, destNodeAddr net.IP, nodeIP net.IP) (err error) {
+	src := net.IP(append([]byte(nil), nodeIP.To4()...))
+	src[2] += byte(i)
+	dst := net.IP(append([]byte(nil), destNodeAddr.To4()...))
+	dst[2] += byte(j)
+	p.l.Infof("Adding IPsec tunnel from %s to %s", src, dst)
+	swIfIndex, err := p.setupOneTunnel(src, dst, config.IPSecIkev2Psk)
+	if err != nil {
+		return errors.Wrapf(err, "error configuring ipsec tunnel from %s to %s", src.String(), dst.String())
+	}
+	p.ipipIfs[destNodeAddr.String()] = append(p.ipipIfs[destNodeAddr.String()], swIfIndex)
+	return nil
+}
+
 func (p ipsecProvider) setupTunnels(destNodeAddr net.IP, isV4 bool) (err error) {
 	nodeIP, _, err := p.s.getNodeIPNet()
 	if err != nil {
@@ -61,16 +75,19 @@ func (p ipsecProvider) setupTunnels(destNodeAddr net.IP, isV4 bool) (err error) 
 	}
 
 	for i := 0; i < config.ExtraAddressCount; i++ {
-		src := net.IP(append([]byte(nil), nodeIP.To4()...))
-		src[2] += byte(i)
-		dst := net.IP(append([]byte(nil), destNodeAddr.To4()...))
-		dst[2] += byte(i)
-		p.l.Infof("Adding IPsec tunnel from %s to %s", src, dst)
-		swIfIndex, err := p.setupOneTunnel(src, dst, config.IPSecIkev2Psk)
-		if err != nil {
-			return errors.Wrapf(err, "error configuring ipsec tunnel from %s to %s", src.String(), dst.String())
+		if config.CrossIpsecTunnels {
+			for j := 0; j < config.ExtraAddressCount; j++ {
+				err := p.setupTunnelWithIds(i, j, destNodeAddr, nodeIP)
+				if err != nil {
+					return err
+				}
+			}
+		} else {
+			err := p.setupTunnelWithIds(i, i, destNodeAddr, nodeIP)
+			if err != nil {
+				return err
+			}
 		}
-		p.ipipIfs[destNodeAddr.String()] = append(p.ipipIfs[destNodeAddr.String()], swIfIndex)
 	}
 
 	return nil
@@ -173,17 +190,8 @@ func (p *ipsecProvider) waitForIPsecSA(profile string, ipipInterface uint32) {
 	}
 }
 
-func (p ipsecProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 bool) (err error) {
-	p.l.Debugf("Adding IPsec connectivity to %s via %s", dst.String(), destNodeAddr.String())
-
-	if _, found := p.ipipIfs[destNodeAddr.String()]; !found {
-		err = p.setupTunnels(destNodeAddr, isV4)
-		if err != nil {
-			return errors.Wrap(err, "Error configuring IPsec tunnels")
-		}
-	}
-	swIfIndices := p.ipipIfs[destNodeAddr.String()]
-	paths := make([]types.RoutePath, len(swIfIndices))
+func getIPSecRoutePaths(swIfIndices []uint32) []types.RoutePath {
+	paths := make([]types.RoutePath, 0, len(swIfIndices))
 	for _, swIfIndex := range swIfIndices {
 		paths = append(paths, types.RoutePath{
 			Gw:        nil,
@@ -191,11 +199,21 @@ func (p ipsecProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 
 			SwIfIndex: swIfIndex,
 		})
 	}
+	return paths
+}
 
-	p.l.Debugf("Adding ipip tunnel route to %s via swIfIndices %v", dst.IP.String(), swIfIndices)
+func (p ipsecProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 bool) (err error) {
+	if _, found := p.ipipIfs[destNodeAddr.String()]; !found {
+		err = p.setupTunnels(destNodeAddr, isV4)
+		if err != nil {
+			return errors.Wrap(err, "Error configuring IPsec tunnels")
+		}
+	}
+	swIfIndices := p.ipipIfs[destNodeAddr.String()]
+	p.l.Infof("IPSEC: ADD %s via %s [%v]", dst.String(), destNodeAddr.String(), swIfIndices)
 	e := p.s.vpp.RouteAdd(&types.Route{
 		Dst:   &dst,
-		Paths: paths,
+		Paths: getIPSecRoutePaths(swIfIndices),
 	})
 	if e != nil {
 		err = e
@@ -209,17 +227,10 @@ func (p ipsecProvider) delConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 
 	if !found {
 		return errors.Errorf("Deleting unknown ipip tunnel %s", destNodeAddr.String())
 	}
-	paths := make([]types.RoutePath, len(swIfIndices))
-	for _, swIfIndex := range swIfIndices {
-		paths = append(paths, types.RoutePath{
-			Gw:        nil,
-			Table:     0,
-			SwIfIndex: swIfIndex,
-		})
-	}
+	p.l.Infof("IPSEC: DEL %s via %s [%v]", dst.String(), destNodeAddr.String(), swIfIndices)
 	e := p.s.vpp.RouteDel(&types.Route{
 		Dst:   &dst,
-		Paths: paths,
+		Paths: getIPSecRoutePaths(swIfIndices),
 	})
 	if e != nil {
 		err = e

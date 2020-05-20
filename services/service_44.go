@@ -46,6 +46,11 @@ func newService44Provider(s *Server) (p *Service44Provider) {
 }
 
 func (p *Service44Provider) Init() (err error) {
+	err = p.vpp.EnableNatForwarding()
+	if err != nil {
+		return err
+	}
+
 	p.nat44addressRefCnt = make(map[string]int)
 	p.nat44backendIPmap = make(map[string]*types.Nat44Entry)
 	err = p.vpp.AddNat44OutsideInterface(config.DataInterfaceSwIfIndex)

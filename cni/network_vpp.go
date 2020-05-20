@@ -385,11 +385,16 @@ func (s *Server) AddVppInterface(args *pb.AddRequest) (ifName, contTapMac string
 	if err != nil {
 		return "", "", s.tapErrorCleanup(contTapName, netns, err, "Error creating Tap")
 	}
-	s.log.Infof("Created tap with swIfIndex %d", swIfIndex)
+	s.log.Infof("TAP: container swIfIndex %d", swIfIndex)
 
 	err = s.vpp.InterfaceAdminUp(swIfIndex)
 	if err != nil {
 		return "", "", s.tapErrorCleanup(contTapName, netns, err, "error setting new tap up")
+	}
+
+	err = s.vpp.SetInterfaceRxMode(swIfIndex, types.AllQueues, config.TapRxMode)
+	if err != nil {
+		return "", "", s.tapErrorCleanup(contTapName, netns, err, "error SetInterfaceRxMode on data interface")
 	}
 
 	// configure vpp side TAP
