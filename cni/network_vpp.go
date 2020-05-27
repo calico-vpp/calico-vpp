@@ -195,11 +195,6 @@ func (s *Server) getNamespaceSideGw(isv6 bool, swIfIndex uint32) (gwIp net.IP, e
 
 func (s *Server) announceLocalAddress(addr *net.IPNet, isWithdrawal bool) {
 	s.routingServer.AnnounceLocalAddress(addr, isWithdrawal)
-	s.servicesServer.AnnounceLocalAddress(addr, isWithdrawal)
-}
-
-func (s *Server) announceContainerInterface(swIfIndex uint32, isWithdrawal bool) {
-	s.servicesServer.AnnounceInterface(swIfIndex, false /* isTunnel */, isWithdrawal)
 }
 
 func (s *Server) configureNamespaceSideTap(args *pb.AddRequest, swIfIndex uint32, contTapName string, contTapMac *string) func(hostNS ns.NetNS) error {
@@ -429,8 +424,6 @@ func (s *Server) AddVppInterface(args *pb.AddRequest) (ifName, contTapMac string
 		return "", "", s.tapErrorCleanup(contTapName, netns, err, "error adding vpp side routes for interface: %s", tapTag)
 	}
 
-	s.announceContainerInterface(swIfIndex, false /* isWithdrawal */)
-
 	s.log.Infof("tap setup complete")
 	return swIfIdxToIfName(swIfIndex), contTapMac, err
 }
@@ -552,7 +545,6 @@ func (s *Server) DelVppInterface(args *pb.DelRequest) error {
 		return errors.Wrap(err, "Error deleting ip4 routes")
 	}
 
-	s.announceContainerInterface(swIfIndex, true /* isWithdrawal */)
 	// Delete tap
 	err = s.vpp.DelTap(swIfIndex)
 	if err != nil {
