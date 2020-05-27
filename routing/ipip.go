@@ -71,7 +71,6 @@ func (p ipipProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 b
 			return errors.Wrapf(err, "Error setting ipip interface up")
 		}
 
-		p.s.servicesServer.AnnounceInterface(swIfIndex, true /* isTunnel */, false /* isWithdrawal */)
 		p.ipipIfs[destNodeAddr.String()] = swIfIndex
 		p.l.Infof("IPIP: Added ?->%s %d", dst.IP.String(), swIfIndex)
 	}
@@ -94,7 +93,6 @@ func (p ipipProvider) delConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 b
 		p.l.Infof("IPIP: Del unknown %s", destNodeAddr.String())
 		return errors.Errorf("Deleting unknown ipip tunnel %s", destNodeAddr.String())
 	}
-	p.s.servicesServer.AnnounceInterface(swIfIndex, true /* isTunnel */, true /* isWithdrawal */)
 	p.l.Infof("IPIP: Del ?->%s %d", destNodeAddr.String(), swIfIndex)
 	err := p.s.vpp.RouteDel(&types.Route{
 		Dst: &dst,

@@ -21,158 +21,124 @@ import (
 	"github.com/calico-vpp/vpplink"
 	"github.com/calico-vpp/vpplink/types"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-func getTargetPort(sPort v1.ServicePort) (int32, error) {
-	tp := sPort.TargetPort
-	if tp.Type == intstr.Int {
-		if tp.IntVal == 0 {
-			// Unset targetport
-			return sPort.Port, nil
-		} else {
-			return tp.IntVal, nil
-		}
-	} else {
-		return 0, errors.Errorf("Unsupported string type for service port: %+v", sPort)
-	}
+type CalicoServiceProvider struct {
+	log          *logrus.Entry
+	vpp          *vpplink.VppLink
+	s            *Server
+	clusterIPMap map[string]*types.CalicoTranslateEntry
+	nodePortMap  map[string]*types.CalicoTranslateEntry
 }
 
-func getServicePortProto(proto v1.Protocol) types.IPProto {
-	switch proto {
-	case v1.ProtocolUDP:
-		return types.UDP
-	case v1.ProtocolSCTP:
-		return types.SCTP
-	case v1.ProtocolTCP:
-		return types.TCP
-	default:
-		return types.TCP
+func newCalicoServiceProvider(s *Server) (p *CalicoServiceProvider) {
+	p = &CalicoServiceProvider{
+		log: s.log.WithField("service", "calico"),
+		vpp: s.vpp,
+		s:   s,
 	}
+	return p
 }
 
-func formatProto(proto types.IPProto) string {
-	switch proto {
-	case types.UDP:
-		return "UDP"
-	case types.SCTP:
-		return "SCTP"
-	case types.TCP:
-		return "TCP"
-	default:
-		return "???"
-	}
+func (p *CalicoServiceProvider) Init() (err error) {
+	p.clusterIPMap = make(map[string]*types.CalicoTranslateEntry)
+	p.nodePortMap = make(map[string]*types.CalicoTranslateEntry)
+	return nil
 }
 
-func getServiceBackendIPs(servicePort *v1.ServicePort, ep *v1.Endpoints) (backendIPs []net.IP) {
-	for _, set := range ep.Subsets {
-		// Check if this subset exposes the port we're interested in
-		for _, port := range set.Ports {
-			if servicePort.Name == port.Name {
-				for _, addr := range set.Addresses {
-					ip := net.ParseIP(addr.IP)
-					if ip != nil {
-						backendIPs = append(backendIPs, ip)
-					}
-				}
-				break
+func getCalicoEntry(servicePort *v1.ServicePort, ep *v1.Endpoints, clusterIP net.IP) (entry *types.CalicoTranslateEntry, err error) {
+	targetPort, err := getTargetPort(*servicePort)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Error determinig target port")
+	}
+	return &types.CalicoTranslateEntry{
+		SrcPort:    uint16(servicePort.Port),
+		Vip:        clusterIP,
+		Proto:      getServicePortProto(servicePort.Protocol),
+		DestPort:   uint16(targetPort),
+		BackendIPs: getServiceBackendIPs(servicePort, ep),
+	}, nil
+}
+
+func getCalicoNodePortEntry(servicePort *v1.ServicePort, ep *v1.Endpoints, nodeIP net.IP) (entry *types.CalicoTranslateEntry, err error) {
+	targetPort, err := getTargetPort(*servicePort)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Error determinig target port")
+	}
+	return &types.CalicoTranslateEntry{
+		SrcPort:    uint16(servicePort.NodePort),
+		Vip:        nodeIP,
+		Proto:      getServicePortProto(servicePort.Protocol),
+		DestPort:   uint16(targetPort),
+		BackendIPs: getServiceBackendIPs(servicePort, ep),
+	}, nil
+}
+
+func (p *CalicoServiceProvider) AddServicePort(service *v1.Service, ep *v1.Endpoints, isNodePort bool) (err error) {
+	clusterIP := net.ParseIP(service.Spec.ClusterIP)
+	nodeIP, _, err := p.s.getNodeIP()
+	if err != nil {
+		return errors.Wrapf(err, "Couldn't get node IP")
+	}
+	p.log.Infof("NAT: Add ClusterIP")
+	for _, servicePort := range service.Spec.Ports {
+		if entry, err := getCalicoEntry(&servicePort, ep, clusterIP); err == nil {
+			p.log.Infof("NAT: (add) %s", entry.String())
+			entryID, err := p.vpp.CalicoTranslateAdd(entry)
+			if err != nil {
+				return errors.Wrapf(err, "NAT:Error adding nodePort %s", entry.String())
 			}
+			entry.ID = entryID
+			p.clusterIPMap[servicePort.Name] = entry
+		} else {
+			p.log.Warnf("NAT:Error getting service entry: %v", err)
+		}
+		if !isNodePort {
+			continue
+		}
+		if entry, err := getCalicoNodePortEntry(&servicePort, ep, nodeIP); err == nil {
+			p.log.Infof("NAT: (add) %s", entry.String())
+			entryID, err := p.vpp.CalicoTranslateAdd(entry)
+			if err != nil {
+				return errors.Wrapf(err, "NAT:Error adding nodePort %s", entry.String())
+			}
+			entry.ID = entryID
+			p.nodePortMap[servicePort.Name] = entry
+		} else {
+			p.log.Warnf("NAT:Error getting service entry: %v", err)
 		}
 	}
-	return backendIPs
+	return nil
 }
 
-func (s *Server) AnnounceLocalAddress(addr *net.IPNet, isWithdrawal bool) {
-	err := s.service44Provider.AnnounceLocalAddress(addr, isWithdrawal)
-	if err != nil {
-		s.log.Errorf("Local address %+v announcing failed : %+v", addr, err)
+func (p *CalicoServiceProvider) DelServicePort(service *v1.Service, ep *v1.Endpoints, isNodePort bool) (err error) {
+	p.log.Infof("NAT: Add ClusterIP")
+	for _, servicePort := range service.Spec.Ports {
+		if entry, ok := p.clusterIPMap[servicePort.Name]; ok {
+			p.log.Infof("NAT: (del) %s", entry.String())
+			err = p.vpp.CalicoTranslateDel(entry.ID)
+			if err != nil {
+				return errors.Wrapf(err, "NAT: (del) Error deleting entry %s", entry.String())
+			}
+			delete(p.clusterIPMap, servicePort.Name)
+		} else {
+			p.log.Infof("NAT: (del) Entry not found for %s", servicePort.Name)
+		}
+		if !isNodePort {
+			continue
+		}
+		if entry, ok := p.nodePortMap[servicePort.Name]; ok {
+			p.log.Infof("NAT: (del) nodeport %s", entry.String())
+			err = p.vpp.CalicoTranslateDel(entry.ID)
+			if err != nil {
+				return errors.Wrapf(err, "NAT: (del) Error deleting nodeport %s", entry.String())
+			}
+			delete(p.clusterIPMap, servicePort.Name)
+		} else {
+			p.log.Infof("NAT: (del) Entry not found for %s", servicePort.Name)
+		}
 	}
-	err = s.service66Provider.AnnounceLocalAddress(addr, isWithdrawal)
-	if err != nil {
-		s.log.Errorf("Local address %+v announcing failed : %+v", addr, err)
-	}
-}
-
-func (s *Server) AnnounceInterface(swIfIndex uint32, isTunnel bool, isWithdrawal bool) {
-	err := s.service44Provider.AnnounceInterface(swIfIndex, isTunnel, isWithdrawal)
-	if err != nil {
-		s.log.Errorf("Container interface %d announcing failed : %+v", swIfIndex, err)
-	}
-	err = s.service66Provider.AnnounceInterface(swIfIndex, isTunnel, isWithdrawal)
-	if err != nil {
-		s.log.Errorf("Container interface %d announcing failed : %+v", swIfIndex, err)
-	}
-}
-
-func (s *Server) UpdateServiceNat(service *v1.Service, ep *v1.Endpoints) error {
-	if service == nil || ep == nil {
-		return errors.Errorf("nil service/endpoint, cannot process")
-	}
-	clusterIP := net.ParseIP(service.Spec.ClusterIP)
-	if clusterIP == nil {
-		s.log.Debugf("Service %s/%s has no IP, skipping", service.Namespace, service.Name)
-		return nil
-	}
-	serviceProvider := s.service44Provider
-	if vpplink.IsIP6(clusterIP) {
-		serviceProvider = s.service66Provider
-	}
-	switch service.Spec.Type {
-	case v1.ServiceTypeClusterIP:
-		return serviceProvider.UpdateClusterIP(service, ep)
-	case v1.ServiceTypeNodePort:
-		return serviceProvider.UpdateNodePort(service, ep)
-	default:
-		s.log.Debugf("service type creation not supported : %s", service.Spec.Type)
-		return nil
-	}
-}
-
-func (s *Server) AddServiceNat(service *v1.Service, ep *v1.Endpoints) error {
-	if service == nil || ep == nil {
-		return errors.Errorf("nil service/endpoint, cannot process")
-	}
-	clusterIP := net.ParseIP(service.Spec.ClusterIP)
-	if clusterIP == nil {
-		s.log.Debugf("Service %s/%s has no IP, skipping", service.Namespace, service.Name)
-		return nil
-	}
-	serviceProvider := s.service44Provider
-	if vpplink.IsIP6(clusterIP) {
-		serviceProvider = s.service66Provider
-	}
-	switch service.Spec.Type {
-	case v1.ServiceTypeClusterIP:
-		return serviceProvider.AddClusterIP(service, ep)
-	case v1.ServiceTypeNodePort:
-		return serviceProvider.AddNodePort(service, ep)
-	default:
-		s.log.Debugf("service type creation not supported : %s", service.Spec.Type)
-		return nil
-	}
-}
-
-func (s *Server) DelServiceNat(service *v1.Service, ep *v1.Endpoints) error {
-	if service == nil || ep == nil {
-		return errors.Errorf("nil service/endpoint, cannot process")
-	}
-	clusterIP := net.ParseIP(service.Spec.ClusterIP)
-	if clusterIP == nil {
-		s.log.Debugf("Service %s/%s has no IP, skipping", service.Namespace, service.Name)
-		return nil
-	}
-	serviceProvider := s.service44Provider
-	if vpplink.IsIP6(clusterIP) {
-		serviceProvider = s.service66Provider
-	}
-	switch service.Spec.Type {
-	case v1.ServiceTypeClusterIP:
-		return serviceProvider.DelClusterIP(service, ep)
-	case v1.ServiceTypeNodePort:
-		return serviceProvider.DelNodePort(service, ep)
-	default:
-		s.log.Debugf("service type deletion not supported : %s", service.Spec.Type)
-		return nil
-	}
+	return nil
 }

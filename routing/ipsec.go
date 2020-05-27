@@ -99,9 +99,6 @@ func (p ipsecProvider) setupOneTunnel(src, dst net.IP, psk string) (tunSwIfIndex
 		return 0, errors.Wrapf(err, "Error adding ipip tunnel %s -> %s", src.String(), dst.String())
 	}
 
-	p.s.servicesServer.AnnounceInterface(swIfIndex, true /* isTunnel */, false /* isWithdrawal */)
-	p.l.Infof("ipip tunnel from %s to %s created with index %d", src.String(), dst.String(), swIfIndex)
-
 	err = p.s.vpp.InterfaceSetUnnumbered(swIfIndex, config.DataInterfaceSwIfIndex)
 	if err != nil {
 		// TODO : delete tunnel
