@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/calico-vpp/calico-vpp/config"
+	"github.com/calico-vpp/vpplink"
 	"github.com/calico-vpp/vpplink/types"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -64,16 +65,8 @@ func (p ipsecProvider) setupTunnelWithIds(i int, j int, destNodeAddr net.IP, nod
 	return nil
 }
 
-func (p ipsecProvider) setupTunnels(destNodeAddr net.IP, isV4 bool) (err error) {
-	nodeIP, _, err := p.s.getNodeIPNet()
-	if err != nil {
-		return errors.Wrapf(err, "Error getting node ip")
-	}
-
-	if !isV4 || nodeIP.To4() == nil || destNodeAddr.To4() == nil {
-		return errors.New("IPv6 not supported with IPsec at this time")
-	}
-
+func (p ipsecProvider) setupTunnels(destNodeAddr net.IP) (err error) {
+	nodeIP := p.s.getNodeIP(vpplink.IsIP6(destNodeAddr))
 	for i := 0; i < config.ExtraAddressCount; i++ {
 		if config.CrossIpsecTunnels {
 			for j := 0; j < config.ExtraAddressCount; j++ {
@@ -94,7 +87,7 @@ func (p ipsecProvider) setupTunnels(destNodeAddr net.IP, isV4 bool) (err error) 
 }
 
 func (p ipsecProvider) setupOneTunnel(src, dst net.IP, psk string) (tunSwIfIndex uint32, err error) {
-	swIfIndex, err := p.s.vpp.AddIpipTunnel(src, dst, true, 0)
+	swIfIndex, err := p.s.vpp.AddIpipTunnel(src, dst, 0)
 	if err != nil {
 		return 0, errors.Wrapf(err, "Error adding ipip tunnel %s -> %s", src.String(), dst.String())
 	}
@@ -199,9 +192,9 @@ func getIPSecRoutePaths(swIfIndices []uint32) []types.RoutePath {
 	return paths
 }
 
-func (p ipsecProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 bool) (err error) {
+func (p ipsecProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP) (err error) {
 	if _, found := p.ipipIfs[destNodeAddr.String()]; !found {
-		err = p.setupTunnels(destNodeAddr, isV4)
+		err = p.setupTunnels(destNodeAddr)
 		if err != nil {
 			return errors.Wrap(err, "Error configuring IPsec tunnels")
 		}
@@ -219,7 +212,7 @@ func (p ipsecProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 
 	return errors.Wrap(err, "Error configuring routes")
 }
 
-func (p ipsecProvider) delConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 bool) (err error) {
+func (p ipsecProvider) delConnectivity(dst net.IPNet, destNodeAddr net.IP) (err error) {
 	swIfIndices, found := p.ipipIfs[destNodeAddr.String()]
 	if !found {
 		return errors.Errorf("Deleting unknown ipip tunnel %s", destNodeAddr.String())

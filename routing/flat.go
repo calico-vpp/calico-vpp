@@ -18,7 +18,6 @@ package routing
 import (
 	"net"
 
-	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/vpplink"
 	"github.com/calico-vpp/vpplink/types"
 	"github.com/pkg/errors"
@@ -31,23 +30,11 @@ type flatL3Provider struct {
 }
 
 func getRoutePaths(addr net.IP) []types.RoutePath {
-	paths := make([]types.RoutePath, 0, config.ExtraAddressCount)
-	paths = append(paths, types.RoutePath{
+	return []types.RoutePath{{
 		Gw:        addr,
 		SwIfIndex: vpplink.AnyInterface,
 		Table:     0,
-	})
-
-	for i := 0; i < config.ExtraAddressCount; i++ {
-		naddr := net.IP(append([]byte(nil), addr.To4()...))
-		naddr[2] += byte(i)
-		paths = append(paths, types.RoutePath{
-			SwIfIndex: vpplink.AnyInterface,
-			Gw:        naddr,
-			Table:     0,
-		})
-	}
-	return paths
+	}}
 }
 
 func newFlatL3Provider(s *Server) (p *flatL3Provider) {
@@ -58,7 +45,7 @@ func newFlatL3Provider(s *Server) (p *flatL3Provider) {
 	return p
 }
 
-func (p *flatL3Provider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 bool) error {
+func (p *flatL3Provider) addConnectivity(dst net.IPNet, destNodeAddr net.IP) error {
 	p.l.Printf("adding route %s to VPP", dst.String())
 	paths := getRoutePaths(destNodeAddr)
 	err := p.s.vpp.RouteAdd(&types.Route{
@@ -68,7 +55,7 @@ func (p *flatL3Provider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV
 	return errors.Wrap(err, "error replacing route")
 }
 
-func (p *flatL3Provider) delConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 bool) error {
+func (p *flatL3Provider) delConnectivity(dst net.IPNet, destNodeAddr net.IP) error {
 	p.l.Debugf("removing route %s from VPP", dst.String())
 	paths := getRoutePaths(destNodeAddr)
 	err := p.s.vpp.RouteDel(&types.Route{

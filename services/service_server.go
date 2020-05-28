@@ -24,13 +24,13 @@ import (
 	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/vpplink"
 	"github.com/pkg/errors"
-	calicocliv3 "github.com/projectcalico/libcalico-go/lib/clientv3"
 	"github.com/projectcalico/libcalico-go/lib/options"
+	calicocliv3 "github.com/projectcalico/libcalico-go/lib/clientv3"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/context"
 	"gopkg.in/tomb.v2"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"golang.org/x/net/context"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
@@ -50,8 +50,8 @@ type Server struct {
 	endpointInformer cache.Controller
 	clientv3         calicocliv3.Interface
 	nodeName         string
-	nodeIp           net.IP
-	nodeIpNet        *net.IPNet
+	ipv4             net.IP
+	ipv6             net.IP
 	lock             sync.Mutex
 	log              *logrus.Entry
 	vpp              *vpplink.VppLink
@@ -77,12 +77,26 @@ func NewServer(vpp *vpplink.VppLink, log *logrus.Entry) (*Server, error) {
 	if err != nil {
 		panic(err.Error())
 	}
+	node, err := calicoCliV3.Nodes().Get(context.Background(), nodeName, options.GetOptions{})
+	if err != nil {
+		panic(err.Error())
+	}
+	ipv4, _, err := net.ParseCIDR(node.Spec.BGP.IPv4Address)
+	if err != nil {
+		log.Infof("Node ipv4 parsing error %v", err)
+	}
+	ipv6, _, err := net.ParseCIDR(node.Spec.BGP.IPv6Address)
+	if err != nil {
+		log.Infof("Node ipv6 parsing error %v", err)
+	}
 	server := Server{
 		clientv3:        calicoCliV3,
 		nodeName:        nodeName,
 		vpp:             vpp,
 		log:             log,
 		vppTapSwIfindex: swIfIndex,
+		ipv4:            ipv4,
+		ipv6:            ipv6,
 	}
 	serviceListWatch := cache.NewListWatchFromClient(client.CoreV1().RESTClient(),
 		"services", "", fields.Everything())
@@ -131,20 +145,12 @@ func NewServer(vpp *vpplink.VppLink, log *logrus.Entry) (*Server, error) {
 	return &server, nil
 }
 
-func (s *Server) getNodeIP() (ip net.IP, ipNet *net.IPNet, err error) {
-	if s.nodeIp == nil {
-		node, err := s.clientv3.Nodes().Get(context.Background(), s.nodeName, options.GetOptions{})
-		if err != nil {
-			return nil, nil, errors.Wrap(err, "error getting node config")
-		}
-		ip, ipNet, err = net.ParseCIDR(node.Spec.BGP.IPv4Address)
-		if err != nil {
-			return nil, nil, errors.Wrapf(err, "error parsing node IPv4 network: %s", node.Spec.BGP.IPv4Address)
-		}
-		s.nodeIp = ip
-		s.nodeIpNet = ipNet
+func (s *Server) getNodeIP(isv6 bool) net.IP {
+	if isv6 {
+		return s.ipv6
+	} else {
+		return s.ipv4
 	}
-	return s.nodeIp, s.nodeIpNet, nil
 }
 
 func (s *Server) AddDelService(service *v1.Service, ep *v1.Endpoints, isWithdrawal bool) error {

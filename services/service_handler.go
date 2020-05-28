@@ -78,10 +78,7 @@ func getCalicoNodePortEntry(servicePort *v1.ServicePort, ep *v1.Endpoints, nodeI
 
 func (p *CalicoServiceProvider) AddServicePort(service *v1.Service, ep *v1.Endpoints, isNodePort bool) (err error) {
 	clusterIP := net.ParseIP(service.Spec.ClusterIP)
-	nodeIP, _, err := p.s.getNodeIP()
-	if err != nil {
-		return errors.Wrapf(err, "Couldn't get node IP")
-	}
+	nodeIP := p.s.getNodeIP(vpplink.IsIP6(clusterIP))
 	p.log.Infof("NAT: Add ClusterIP")
 	for _, servicePort := range service.Spec.Ports {
 		if entry, err := getCalicoEntry(&servicePort, ep, clusterIP); err == nil {

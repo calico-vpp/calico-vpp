@@ -17,35 +17,36 @@
 package routing
 
 import (
-	"fmt"
 	"net"
 
 	"github.com/calico-vpp/calico-vpp/config"
+	"github.com/calico-vpp/vpplink"
 	"github.com/pkg/errors"
 	calicov3 "github.com/projectcalico/libcalico-go/lib/apis/v3"
-	"github.com/projectcalico/libcalico-go/lib/options"
-	"golang.org/x/net/context"
 )
 
 type connectivityProvider interface {
-	addConnectivity(dst net.IPNet, destNode net.IP, isV4 bool) error
-	delConnectivity(dst net.IPNet, destNode net.IP, isV4 bool) error
+	addConnectivity(dst net.IPNet, destNode net.IP) error
+	delConnectivity(dst net.IPNet, destNode net.IP) error
 }
 
-func (s *Server) getNodeIPNet() (ip net.IP, ipNet *net.IPNet, err error) {
-	// TODO cache, we only do this to get the address subnet
-	node, err := s.clientv3.Nodes().Get(context.Background(), s.nodeName, options.GetOptions{})
-	if err != nil {
-		return nil, nil, errors.Wrap(err, "error getting node config")
+func (s *Server) getNodeIP(isv6 bool) net.IP {
+	if isv6 {
+		return s.ipv6
+	} else {
+		return s.ipv4
 	}
-	ip, ipNet, err = net.ParseCIDR(node.Spec.BGP.IPv4Address)
-	if err != nil {
-		return nil, nil, errors.Wrapf(err, "error parsing node IPv4 network: %s", node.Spec.BGP.IPv4Address)
-	}
-	return ip, ipNet, nil
 }
 
-func (s *Server) needIpipTunnel(dst net.IPNet, otherNodeIP net.IP, isV4 bool) (ipip bool, err error) {
+func (s *Server) getNodeIPNet(isv6 bool) *net.IPNet {
+	if isv6 {
+		return s.ipv6Net
+	} else {
+		return s.ipv4Net
+	}
+}
+
+func (s *Server) needIpipTunnel(dst net.IPNet, otherNodeIP net.IP) (ipip bool, err error) {
 	ipPool := s.ipam.match(dst)
 	if ipPool == nil {
 		return false, nil
@@ -53,25 +54,18 @@ func (s *Server) needIpipTunnel(dst net.IPNet, otherNodeIP net.IP, isV4 bool) (i
 	if ipPool.Spec.IPIPMode == calicov3.IPIPModeNever {
 		return false, nil
 	}
-	_, ipNet, err := s.getNodeIPNet()
-	if err != nil {
-		return false, errors.Wrapf(err, "error getting node ip")
-	}
-
+	ipNet := s.getNodeIPNet(vpplink.IsIP6(dst.IP))
 	if ipPool.Spec.IPIPMode == calicov3.IPIPModeCrossSubnet && !isCrossSubnet(otherNodeIP, *ipNet) {
 		return false, nil
-	}
-	if !isV4 {
-		return false, fmt.Errorf("ipv6 not supported for ipip")
 	}
 
 	return true, nil
 }
 
-func (s *Server) updateIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bool, IsWithdraw bool) error {
+func (s *Server) updateIPConnectivity(dst net.IPNet, otherNodeIP net.IP, IsWithdraw bool) error {
 	var provider connectivityProvider = s.flat
 
-	ipip, err := s.needIpipTunnel(dst, otherNodeIP, isV4)
+	ipip, err := s.needIpipTunnel(dst, otherNodeIP)
 	if err != nil {
 		return errors.Wrapf(err, "error checking for ipip tunnel")
 	}
@@ -82,8 +76,8 @@ func (s *Server) updateIPConnectivity(dst net.IPNet, otherNodeIP net.IP, isV4 bo
 	}
 
 	if IsWithdraw {
-		return provider.delConnectivity(dst, otherNodeIP, isV4)
+		return provider.delConnectivity(dst, otherNodeIP)
 	} else {
-		return provider.addConnectivity(dst, otherNodeIP, isV4)
+		return provider.addConnectivity(dst, otherNodeIP)
 	}
 }

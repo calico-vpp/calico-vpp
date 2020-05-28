@@ -19,6 +19,7 @@ import (
 	"net"
 
 	"github.com/calico-vpp/calico-vpp/config"
+	"github.com/calico-vpp/vpplink"
 	"github.com/calico-vpp/vpplink/types"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -39,16 +40,13 @@ func newIPIPProvider(s *Server) (p *ipipProvider) {
 	return p
 }
 
-func (p ipipProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 bool) error {
+func (p ipipProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP) error {
 	p.l.Debugf("Adding ipip Tunnel to VPP")
 	if _, found := p.ipipIfs[destNodeAddr.String()]; !found {
-		nodeIP, _, err := p.s.getNodeIPNet()
-		if err != nil {
-			return errors.Wrapf(err, "Error getting node ip")
-		}
+		nodeIP := p.s.getNodeIP(vpplink.IsIP6(destNodeAddr))
 		p.l.Infof("IPIP: Add %s->%s", nodeIP.String(), dst.IP.String())
 
-		swIfIndex, err := p.s.vpp.AddIpipTunnel(nodeIP, destNodeAddr, isV4, 0)
+		swIfIndex, err := p.s.vpp.AddIpipTunnel(nodeIP, destNodeAddr, 0)
 		if err != nil {
 			return errors.Wrapf(err, "Error adding ipip tunnel %s -> %s", nodeIP.String(), destNodeAddr.String())
 		}
@@ -87,7 +85,7 @@ func (p ipipProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 b
 	})
 }
 
-func (p ipipProvider) delConnectivity(dst net.IPNet, destNodeAddr net.IP, isV4 bool) error {
+func (p ipipProvider) delConnectivity(dst net.IPNet, destNodeAddr net.IP) error {
 	swIfIndex, found := p.ipipIfs[destNodeAddr.String()]
 	if !found {
 		p.l.Infof("IPIP: Del unknown %s", destNodeAddr.String())

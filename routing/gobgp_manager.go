@@ -75,10 +75,12 @@ type Server struct {
 	client         *calicocli.Client
 	clientv3       calicocliv3.Interface
 	defaultBGPConf *calicov3.BGPConfigurationSpec
-	hasV4          bool
 	ipv4           net.IP
-	hasV6          bool
 	ipv6           net.IP
+	ipv4Net        *net.IPNet
+	ipv6Net        *net.IPNet
+	hasV4          bool
+	hasV6          bool
 	nodeName       string
 	ipam           IpamCache
 	reloadCh       chan string
@@ -123,12 +125,13 @@ func NewServer(vpp *vpplink.VppLink, ss *services.Server, l *logrus.Entry) (*Ser
 	if node.Spec.BGP == nil {
 		return nil, fmt.Errorf("Calico is running in policy-only mode")
 	}
-	var ipv4, ipv6 net.IP
 	var hasV4, hasV6 bool = true, true
-	if ipv4, _, err = net.ParseCIDR(node.Spec.BGP.IPv4Address); err != nil {
+	ipv4, ipv4Net, err := net.ParseCIDR(node.Spec.BGP.IPv4Address)
+	if err != nil {
 		hasV4 = false
 	}
-	if ipv6, _, err = net.ParseCIDR(node.Spec.BGP.IPv6Address); err != nil {
+	ipv6, ipv6Net, err := net.ParseCIDR(node.Spec.BGP.IPv6Address)
+	if err != nil {
 		hasV6 = false
 	}
 
@@ -147,10 +150,12 @@ func NewServer(vpp *vpplink.VppLink, ss *services.Server, l *logrus.Entry) (*Ser
 		client:         calicoCli,
 		clientv3:       calicoCliV3,
 		nodeName:       nodeName,
-		hasV4:          hasV4,
 		ipv4:           ipv4,
-		hasV6:          hasV6,
 		ipv6:           ipv6,
+		ipv4Net:        ipv4Net,
+		ipv6Net:        ipv6Net,
+		hasV4:          hasV4,
+		hasV6:          hasV6,
 		reloadCh:       make(chan string),
 		prefixReady:    make(chan int),
 		vpp:            vpp,
@@ -487,7 +492,6 @@ func (s *Server) getNexthop(path *bgpapi.Path) string {
 func (s *Server) injectRoute(path *bgpapi.Path) error {
 	var dst net.IPNet
 	ipAddrPrefixNlri := &bgpapi.IPAddressPrefix{}
-	isV4 := false
 	otherNodeIP := net.ParseIP(s.getNexthop(path))
 	if otherNodeIP == nil {
 		return fmt.Errorf("Cannot determine path nexthop: %+v", path)
@@ -501,13 +505,12 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 			dst.Mask = net.CIDRMask(int(ipAddrPrefixNlri.PrefixLen), 128)
 		} else {
 			dst.Mask = net.CIDRMask(int(ipAddrPrefixNlri.PrefixLen), 32)
-			isV4 = true
 		}
 	} else {
 		return fmt.Errorf("Cannot handle Nlri: %+v", path.Nlri)
 	}
 
-	return s.updateIPConnectivity(dst, otherNodeIP, isV4, path.IsWithdraw)
+	return s.updateIPConnectivity(dst, otherNodeIP, path.IsWithdraw)
 }
 
 // watchBGPPath watches BGP routes from other peers and inject them into
