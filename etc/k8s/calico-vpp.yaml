@@ -66,13 +66,13 @@ data:
     api-trace { on }
     cpu {
         main-core 1
-        corelist-workers 0,2
+        workers 0
     }
     socksvr {
         socket-name /var/run/vpp/vpp-api.sock
     }
     dpdk {
-      dev __PCI_DEVICE_ID__ { num-rx-queues 2  num-tx-queues 2 }
+      dev __PCI_DEVICE_ID__ { num-rx-queues 1  num-tx-queues 1 }
     }
     plugins {
         plugin default { enable }
@@ -620,7 +620,7 @@ spec:
             - name: CALICO_BGP_LOGSEVERITYSCREEN
               value: debug
             - name: CALICOVPP_TAP_RX_QUEUES
-              value: "2"
+              value: "1"
             - name: CALICOVPP_TAP_GSO_ENABLED
               value: "true"
             # Cluster type to identify the deployment type
