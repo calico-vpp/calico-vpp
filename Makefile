@@ -12,4 +12,4 @@ gobgp:
 	go build -o ./dep/gobgp $(GOBGP_DIR)/cmd/gobgp/
 
 image: build gobgp
-	docker build -t calicovpp/node:latest .
+	docker build --pull -t calicovpp/node:latest .
