@@ -26,7 +26,6 @@ import (
 )
 
 const (
-	NODENAME               = "NODENAME"
 	DataInterfaceSwIfIndex = uint32(1) // Assumption: the VPP config ensures this is true
 	CNIServerSocket        = "/var/run/calico/cni-server.sock"
 	VppAPISocket           = "/var/run/vpp/vpp-api.sock"
@@ -36,6 +35,7 @@ const (
 	VppSideMacAddressString       = "02:00:00:00:00:02"
 	ContainerSideMacAddressString = "02:00:00:00:00:01"
 
+	NodeNameEnvVar            = "NODENAME"
 	TapRXQueuesEnvVar         = "CALICOVPP_TAP_RX_QUEUES"
 	TapGSOEnvVar              = "CALICOVPP_TAP_GSO_ENABLED"
 	EnableServicesEnvVar      = "CALICOVPP_NAT_ENABLED"
@@ -44,21 +44,35 @@ const (
 	IPSecExtraAddressesEnvVar = "CALICOVPP_IPSEC_ASSUME_EXTRA_ADDRESSES"
 	IPSecIkev2PskEnvVar       = "CALICOVPP_IPSEC_IKEV2_PSK"
 	TapRxModeEnvVar           = "CALICOVPP_TAP_RX_MODE"
+	BgpLogLevelEnvVar         = "CALICO_BGP_LOGSEVERITYSCREEN"
 )
 
 var (
 	TapRXQueues       = 1
 	TapGSOEnabled     = false
-	EnableServices    = false
+	EnableServices    = true
 	EnableIPSec       = false
 	ExtraAddressCount = 1
 	CrossIpsecTunnels = false
 	IPSecIkev2Psk     = ""
 	TapRxMode         = types.DefaultRxMode
+	BgpLogLevel       = logrus.InfoLevel
+	NodeName          = ""
 )
 
 // LoadConfig loads the calico-vpp-agent configuration from the environment
 func LoadConfig(log *logrus.Logger) (err error) {
+	if conf := os.Getenv(BgpLogLevelEnvVar); conf != "" {
+		loglevel, err := logrus.ParseLevel(conf)
+		if err != nil {
+			log.WithError(err).Error("Failed to parse BGP loglevel: %s, defaulting to info", conf)
+		} else {
+			BgpLogLevel = loglevel
+		}
+	}
+
+	NodeName = os.Getenv(NodeNameEnvVar)
+
 	if conf := os.Getenv(TapRXQueuesEnvVar); conf != "" {
 		queues, err := strconv.ParseInt(conf, 10, 16)
 		if err != nil || queues <= 0 {
@@ -131,6 +145,7 @@ func LoadConfig(log *logrus.Logger) (err error) {
 	log.Infof("Config:CrossIpsecTunnels %t", CrossIpsecTunnels)
 	log.Infof("Config:ExtraAddressCount %d", ExtraAddressCount)
 	log.Infof("Config:RxMode            %d", TapRxMode)
+	log.Infof("Config:BgpLogLevel       %d", BgpLogLevel)
 
 	return nil
 }

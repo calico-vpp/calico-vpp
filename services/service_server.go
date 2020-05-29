@@ -17,20 +17,19 @@ package services
 
 import (
 	"net"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/vpplink"
 	"github.com/pkg/errors"
-	"github.com/projectcalico/libcalico-go/lib/options"
 	calicocliv3 "github.com/projectcalico/libcalico-go/lib/clientv3"
+	"github.com/projectcalico/libcalico-go/lib/options"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/net/context"
 	"gopkg.in/tomb.v2"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
-	"golang.org/x/net/context"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
@@ -49,7 +48,6 @@ type Server struct {
 	serviceInformer  cache.Controller
 	endpointInformer cache.Controller
 	clientv3         calicocliv3.Interface
-	nodeName         string
 	ipv4             net.IP
 	ipv6             net.IP
 	lock             sync.Mutex
@@ -60,7 +58,6 @@ type Server struct {
 }
 
 func NewServer(vpp *vpplink.VppLink, log *logrus.Entry) (*Server, error) {
-	nodeName := os.Getenv(config.NODENAME)
 	clusterConfig, err := rest.InClusterConfig()
 	if err != nil {
 		panic(err.Error())
@@ -77,7 +74,7 @@ func NewServer(vpp *vpplink.VppLink, log *logrus.Entry) (*Server, error) {
 	if err != nil {
 		panic(err.Error())
 	}
-	node, err := calicoCliV3.Nodes().Get(context.Background(), nodeName, options.GetOptions{})
+	node, err := calicoCliV3.Nodes().Get(context.Background(), config.NodeName, options.GetOptions{})
 	if err != nil {
 		panic(err.Error())
 	}
@@ -91,7 +88,6 @@ func NewServer(vpp *vpplink.VppLink, log *logrus.Entry) (*Server, error) {
 	}
 	server := Server{
 		clientv3:        calicoCliV3,
-		nodeName:        nodeName,
 		vpp:             vpp,
 		log:             log,
 		vppTapSwIfindex: swIfIndex,

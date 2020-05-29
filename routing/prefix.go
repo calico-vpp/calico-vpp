@@ -16,7 +16,6 @@
 package routing
 
 import (
-	"os"
 	"time"
 
 	"github.com/calico-vpp/calico-vpp/config"
@@ -92,7 +91,7 @@ func (s *Server) getAssignedPrefixes() ([]string, error) {
 	f := func(ipVersion int) error {
 		blockList, err := s.client.Backend.List(
 			context.Background(),
-			model.BlockAffinityListOptions{Host: os.Getenv(config.NODENAME), IPVersion: ipVersion},
+			model.BlockAffinityListOptions{Host: config.NodeName, IPVersion: ipVersion},
 			"",
 		)
 		if err != nil {

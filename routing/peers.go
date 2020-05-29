@@ -18,6 +18,7 @@ package routing
 import (
 	"net"
 
+	"github.com/calico-vpp/calico-vpp/config"
 	bgpapi "github.com/osrg/gobgp/api"
 	"github.com/pkg/errors"
 	calicov3 "github.com/projectcalico/libcalico-go/lib/apis/v3"
@@ -33,7 +34,7 @@ type bgpPeer struct {
 }
 
 func (s *Server) shouldPeer(peer *calicov3.BGPPeer) bool {
-	if peer.Spec.Node != "" && peer.Spec.Node != s.nodeName {
+	if peer.Spec.Node != "" && peer.Spec.Node != config.NodeName {
 		return false
 	}
 	return true
