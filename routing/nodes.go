@@ -21,6 +21,7 @@ import (
 	"net"
 	"reflect"
 
+	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/pkg/errors"
 	calicov3 "github.com/projectcalico/libcalico-go/lib/apis/v3"
 	calicoerr "github.com/projectcalico/libcalico-go/lib/errors"
@@ -146,7 +147,7 @@ func (s *Server) handleNodeUpdate(
 	isMesh bool,
 ) (bool, error) {
 	s.l.Debugf("Got node update: mesh:%t %s %s %+v %v", isMesh, eventType, nodeName, newSpec, state)
-	if nodeName == s.nodeName {
+	if nodeName == config.NodeName {
 		// No need to manage ourselves, but if we change we need to restart and reconfigure
 		if eventType == watch.Deleted {
 			return true, nil

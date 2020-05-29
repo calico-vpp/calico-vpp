@@ -19,7 +19,6 @@ package routing
 import (
 	"fmt"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"syscall"
@@ -81,7 +80,6 @@ type Server struct {
 	ipv6Net        *net.IPNet
 	hasV4          bool
 	hasV6          bool
-	nodeName       string
 	ipam           IpamCache
 	reloadCh       chan string
 	prefixReady    chan int
@@ -95,19 +93,8 @@ type Server struct {
 }
 
 func NewServer(vpp *vpplink.VppLink, ss *services.Server, l *logrus.Entry) (*Server, error) {
-	rawloglevel := os.Getenv("CALICO_BGP_LOGSEVERITYSCREEN")
-	if rawloglevel != "" {
-		loglevel, err := logrus.ParseLevel(rawloglevel)
-		if err != nil {
-			l.WithError(err).Error("Failed to parse BGP loglevel: %s, defaulting to info", rawloglevel)
-		} else {
-			l.Infof("Setting BGP log level to %s", rawloglevel)
-			logrus.SetLevel(loglevel) // This sets the log level for the GoBGP server
-			// This is separate from the level used by the logger in this package
-		}
-	}
+	logrus.SetLevel(config.BgpLogLevel) // This sets the log level for the GoBGP server
 
-	nodeName := os.Getenv(config.NODENAME)
 	calicoCli, err := calicocli.NewFromEnv()
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot create calico v1 api client")
@@ -117,7 +104,7 @@ func NewServer(vpp *vpplink.VppLink, ss *services.Server, l *logrus.Entry) (*Ser
 		return nil, errors.Wrap(err, "cannot create calico v3 api client")
 	}
 
-	node, err := calicoCliV3.Nodes().Get(context.Background(), nodeName, options.GetOptions{})
+	node, err := calicoCliV3.Nodes().Get(context.Background(), config.NodeName, options.GetOptions{})
 	if err != nil {
 		return nil, errors.Wrap(err, "cannot fetch current node")
 	}
@@ -149,7 +136,6 @@ func NewServer(vpp *vpplink.VppLink, ss *services.Server, l *logrus.Entry) (*Ser
 		bgpServer:      bgpServer,
 		client:         calicoCli,
 		clientv3:       calicoCliV3,
-		nodeName:       nodeName,
 		ipv4:           ipv4,
 		ipv6:           ipv6,
 		ipv4Net:        ipv4Net,
@@ -277,7 +263,7 @@ func (s *Server) getDefaultBGPConfig() (*calicov3.BGPConfigurationSpec, error) {
 }
 
 func (s *Server) getNodeASN() (*numorstring.ASNumber, error) {
-	return s.getPeerASN(s.nodeName)
+	return s.getPeerASN(config.NodeName)
 }
 
 func (s *Server) getPeerASN(host string) (*numorstring.ASNumber, error) {
