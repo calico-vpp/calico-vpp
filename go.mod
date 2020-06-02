@@ -4,7 +4,7 @@ go 1.12
 
 require (
 	github.com/armon/go-radix v1.0.0 // indirect
-	github.com/calico-vpp/vpplink v0.0.0-20200506131545-27ddd6aec688
+	github.com/calico-vpp/vpplink v0.0.0-20200602104200-eb33b915f772
 	github.com/containernetworking/plugins v0.8.2
 	github.com/coreos/etcd v3.3.17+incompatible // indirect
 	github.com/dgryski/go-farm v0.0.0-20191112170834-c2139c5d712b // indirect
@@ -34,5 +34,3 @@ require (
 replace github.com/projectcalico/libcalico-go v1.7.3 => github.com/projectcalico/libcalico-go v1.7.2-0.20191112223013-362a04d5e109
 
 replace github.com/osrg/gobgp v2.0.0+incompatible => github.com/osrg/gobgp v0.0.0-20191101114856-a42a1a5f6bf0
-
-replace github.com/calico-vpp/vpplink => ../vpplink
