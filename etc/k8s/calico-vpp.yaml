@@ -595,7 +595,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: CALICOVPP_IPSEC_ENABLED
-              value: "on"
+              value: "false"
             - name: CALICOVPP_IPSEC_IKEV2_PSK
               valueFrom:
                 secretKeyRef:
