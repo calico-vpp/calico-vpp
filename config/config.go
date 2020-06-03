@@ -52,7 +52,7 @@ var (
 	TapGSOEnabled     = false
 	EnableServices    = true
 	EnableIPSec       = false
-	ExtraAddressCount = 1
+	IpsecAddressCount = 1
 	CrossIpsecTunnels = false
 	IPSecIkev2Psk     = ""
 	TapRxMode         = types.DefaultRxMode
@@ -118,7 +118,7 @@ func LoadConfig(log *logrus.Logger) (err error) {
 		if err != nil {
 			return fmt.Errorf("Invalid %s configuration: %s parses to %v err %v", IPSecExtraAddressesEnvVar, conf, extraAddressCount, err)
 		}
-		ExtraAddressCount = int(extraAddressCount + 1)
+		IpsecAddressCount = int(extraAddressCount) + 1
 	}
 
 	psk := os.Getenv(IPSecIkev2PskEnvVar)
@@ -143,7 +143,7 @@ func LoadConfig(log *logrus.Logger) (err error) {
 	log.Infof("Config:EnableServices    %t", EnableServices)
 	log.Infof("Config:EnableIPSec       %t", EnableIPSec)
 	log.Infof("Config:CrossIpsecTunnels %t", CrossIpsecTunnels)
-	log.Infof("Config:ExtraAddressCount %d", ExtraAddressCount)
+	log.Infof("Config:IpsecAddressCount %d", IpsecAddressCount)
 	log.Infof("Config:RxMode            %d", TapRxMode)
 	log.Infof("Config:BgpLogLevel       %d", BgpLogLevel)
 
