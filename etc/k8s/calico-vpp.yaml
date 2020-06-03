@@ -601,8 +601,6 @@ spec:
                 secretKeyRef:
                   name: calicovpp-ipsec-secret
                   key: psk
-            - name: CALICOVPP_IPSEC_ASSUME_EXTRA_ADDRESSES
-              value: "0"
             # Use Kubernetes API as the backing datastore.
             - name: DATASTORE_TYPE
               value: "kubernetes"
@@ -721,8 +719,6 @@ spec:
                 configMapKeyRef:
                   name: calico-config
                   key: service_prefix
-            - name: CALICOVPP_CONFIGURE_EXTRA_ADDRESSES
-              value: "1"
             # Use Kubernetes API as the backing datastore.
             - name: DATASTORE_TYPE
               value: "kubernetes"
