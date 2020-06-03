@@ -67,9 +67,9 @@ func (p ipsecProvider) setupTunnelWithIds(i int, j int, destNodeAddr net.IP, nod
 
 func (p ipsecProvider) setupTunnels(destNodeAddr net.IP) (err error) {
 	nodeIP := p.s.getNodeIP(vpplink.IsIP6(destNodeAddr))
-	for i := 0; i < config.ExtraAddressCount; i++ {
+	for i := 0; i < config.IpsecAddressCount; i++ {
 		if config.CrossIpsecTunnels {
-			for j := 0; j < config.ExtraAddressCount; j++ {
+			for j := 0; j < config.IpsecAddressCount; j++ {
 				err := p.setupTunnelWithIds(i, j, destNodeAddr, nodeIP)
 				if err != nil {
 					return err
