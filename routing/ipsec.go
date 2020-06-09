@@ -192,17 +192,17 @@ func getIPSecRoutePaths(swIfIndices []uint32) []types.RoutePath {
 	return paths
 }
 
-func (p ipsecProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP) (err error) {
-	if _, found := p.ipipIfs[destNodeAddr.String()]; !found {
-		err = p.setupTunnels(destNodeAddr)
+func (p ipsecProvider) addConnectivity(cn *NodeConnectivity) (err error) {
+	if _, found := p.ipipIfs[cn.NextHop.String()]; !found {
+		err = p.setupTunnels(cn.NextHop)
 		if err != nil {
 			return errors.Wrap(err, "Error configuring IPsec tunnels")
 		}
 	}
-	swIfIndices := p.ipipIfs[destNodeAddr.String()]
-	p.l.Infof("IPSEC: ADD %s via %s [%v]", dst.String(), destNodeAddr.String(), swIfIndices)
+	swIfIndices := p.ipipIfs[cn.NextHop.String()]
+	p.l.Infof("IPSEC: ADD %s via %s [%v]", cn.Dst.String(), cn.NextHop.String(), swIfIndices)
 	e := p.s.vpp.RouteAdd(&types.Route{
-		Dst:   &dst,
+		Dst:   &cn.Dst,
 		Paths: getIPSecRoutePaths(swIfIndices),
 	})
 	if e != nil {
@@ -212,14 +212,14 @@ func (p ipsecProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP) (err 
 	return errors.Wrap(err, "Error configuring routes")
 }
 
-func (p ipsecProvider) delConnectivity(dst net.IPNet, destNodeAddr net.IP) (err error) {
-	swIfIndices, found := p.ipipIfs[destNodeAddr.String()]
+func (p ipsecProvider) delConnectivity(cn *NodeConnectivity) (err error) {
+	swIfIndices, found := p.ipipIfs[cn.NextHop.String()]
 	if !found {
-		return errors.Errorf("Deleting unknown ipip tunnel %s", destNodeAddr.String())
+		return errors.Errorf("Deleting unknown ipip tunnel %s", cn.NextHop.String())
 	}
-	p.l.Infof("IPSEC: DEL %s via %s [%v]", dst.String(), destNodeAddr.String(), swIfIndices)
+	p.l.Infof("IPSEC: DEL %s via %s [%v]", cn.Dst.String(), cn.NextHop.String(), swIfIndices)
 	e := p.s.vpp.RouteDel(&types.Route{
-		Dst:   &dst,
+		Dst:   &cn.Dst,
 		Paths: getIPSecRoutePaths(swIfIndices),
 	})
 	if e != nil {

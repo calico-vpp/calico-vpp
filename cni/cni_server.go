@@ -17,6 +17,7 @@ package cni
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"syscall"
 
@@ -30,12 +31,13 @@ import (
 )
 
 type Server struct {
-	log            *logrus.Entry
-	grpcServer     *grpc.Server
-	vpp            *vpplink.VppLink
-	socketListener net.Listener
-	routingServer  *routing.Server
-	servicesServer *services.Server
+	log             *logrus.Entry
+	grpcServer      *grpc.Server
+	vpp             *vpplink.VppLink
+	socketListener  net.Listener
+	routingServer   *routing.Server
+	servicesServer  *services.Server
+	podInterfaceMap map[string]*pb.AddRequest
 }
 
 func (s *Server) Add(ctx context.Context, in *pb.AddRequest) (*pb.AddReply, error) {
@@ -51,9 +53,18 @@ func (s *Server) Add(ctx context.Context, in *pb.AddRequest) (*pb.AddReply, erro
 		out.Successful = false
 		out.ErrorMessage = err.Error()
 	} else {
+		s.podInterfaceMap[addKey(in)] = in
 		s.log.Infof("Interface creation successful: %s", ifName)
 	}
 	return out, nil
+}
+
+func addKey(in *pb.AddRequest) string {
+	return fmt.Sprintf("%s--%s", in.GetNetns(), in.GetInterfaceName())
+}
+
+func delKey(in *pb.DelRequest) string {
+	return fmt.Sprintf("%s--%s", in.GetNetns(), in.GetInterfaceName())
 }
 
 func (s *Server) Del(ctx context.Context, in *pb.DelRequest) (*pb.DelReply, error) {
@@ -66,6 +77,7 @@ func (s *Server) Del(ctx context.Context, in *pb.DelRequest) (*pb.DelReply, erro
 			ErrorMessage: err.Error(),
 		}, nil
 	}
+	delete(s.podInterfaceMap, delKey(in))
 	s.log.Infof("Interface deletion successful")
 	return &pb.DelReply{
 		Successful: true,
@@ -85,12 +97,13 @@ func NewServer(v *vpplink.VppLink, rs *routing.Server, ss *services.Server, l *l
 		return nil, err
 	}
 	server := &Server{
-		vpp:            v,
-		log:            l,
-		routingServer:  rs,
-		servicesServer: ss,
-		socketListener: lis,
-		grpcServer:     grpc.NewServer(),
+		vpp:             v,
+		log:             l,
+		routingServer:   rs,
+		servicesServer:  ss,
+		socketListener:  lis,
+		grpcServer:      grpc.NewServer(),
+		podInterfaceMap: make(map[string]*pb.AddRequest),
 	}
 	pb.RegisterCniDataplaneServer(server.grpcServer, server)
 	l.Infof("CNI server starting")

@@ -82,13 +82,18 @@ func (p *CalicoServiceProvider) AddServicePort(service *v1.Service, ep *v1.Endpo
 	p.log.Infof("NAT: Add ClusterIP")
 	for _, servicePort := range service.Spec.Ports {
 		if entry, err := getCalicoEntry(&servicePort, ep, clusterIP); err == nil {
-			p.log.Infof("NAT: (add) %s", entry.String())
-			entryID, err := p.vpp.CalicoTranslateAdd(entry)
-			if err != nil {
-				return errors.Wrapf(err, "NAT:Error adding nodePort %s", entry.String())
+			previousEntry, previousFound := p.clusterIPMap[servicePort.Name]
+			if !previousFound || !entry.Equal(previousEntry) {
+				p.log.Infof("NAT: (add) %s", entry.String())
+				entryID, err := p.vpp.CalicoTranslateAdd(entry)
+				if err != nil {
+					return errors.Wrapf(err, "NAT:Error adding nodePort %s", entry.String())
+				}
+				entry.ID = entryID
+				p.clusterIPMap[servicePort.Name] = entry
+			} else {
+				p.log.Infof("NAT: (unchanged) %s", entry.String())
 			}
-			entry.ID = entryID
-			p.clusterIPMap[servicePort.Name] = entry
 		} else {
 			p.log.Warnf("NAT:Error getting service entry: %v", err)
 		}
@@ -96,13 +101,18 @@ func (p *CalicoServiceProvider) AddServicePort(service *v1.Service, ep *v1.Endpo
 			continue
 		}
 		if entry, err := getCalicoNodePortEntry(&servicePort, ep, nodeIP); err == nil {
-			p.log.Infof("NAT: (add) %s", entry.String())
-			entryID, err := p.vpp.CalicoTranslateAdd(entry)
-			if err != nil {
-				return errors.Wrapf(err, "NAT:Error adding nodePort %s", entry.String())
+			previousEntry, previousFound := p.nodePortMap[servicePort.Name]
+			if !previousFound || !entry.Equal(previousEntry) {
+				p.log.Infof("NAT: (add) %s", entry.String())
+				entryID, err := p.vpp.CalicoTranslateAdd(entry)
+				if err != nil {
+					return errors.Wrapf(err, "NAT:Error adding nodePort %s", entry.String())
+				}
+				entry.ID = entryID
+				p.nodePortMap[servicePort.Name] = entry
+			} else {
+				p.log.Infof("NAT: (unchanged) %s", entry.String())
 			}
-			entry.ID = entryID
-			p.nodePortMap[servicePort.Name] = entry
 		} else {
 			p.log.Warnf("NAT:Error getting service entry: %v", err)
 		}

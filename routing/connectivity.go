@@ -26,8 +26,8 @@ import (
 )
 
 type connectivityProvider interface {
-	addConnectivity(dst net.IPNet, destNode net.IP) error
-	delConnectivity(dst net.IPNet, destNode net.IP) error
+	addConnectivity(cn *NodeConnectivity) error
+	delConnectivity(cn *NodeConnectivity) error
 }
 
 func (s *Server) getNodeIP(isv6 bool) net.IP {
@@ -46,26 +46,26 @@ func (s *Server) getNodeIPNet(isv6 bool) *net.IPNet {
 	}
 }
 
-func (s *Server) needIpipTunnel(dst net.IPNet, otherNodeIP net.IP) (ipip bool, err error) {
-	ipPool := s.ipam.match(dst)
+func (s *Server) needIpipTunnel(cn *NodeConnectivity) (ipip bool, err error) {
+	ipPool := s.ipam.match(cn.Dst)
 	if ipPool == nil {
 		return false, nil
 	}
 	if ipPool.Spec.IPIPMode == calicov3.IPIPModeNever {
 		return false, nil
 	}
-	ipNet := s.getNodeIPNet(vpplink.IsIP6(dst.IP))
-	if ipPool.Spec.IPIPMode == calicov3.IPIPModeCrossSubnet && !isCrossSubnet(otherNodeIP, *ipNet) {
+	ipNet := s.getNodeIPNet(vpplink.IsIP6(cn.Dst.IP))
+	if ipPool.Spec.IPIPMode == calicov3.IPIPModeCrossSubnet && !isCrossSubnet(cn.NextHop, *ipNet) {
 		return false, nil
 	}
 
 	return true, nil
 }
 
-func (s *Server) updateIPConnectivity(dst net.IPNet, otherNodeIP net.IP, IsWithdraw bool) error {
+func (s *Server) updateIPConnectivity(cn *NodeConnectivity, IsWithdraw bool) error {
 	var provider connectivityProvider = s.flat
 
-	ipip, err := s.needIpipTunnel(dst, otherNodeIP)
+	ipip, err := s.needIpipTunnel(cn)
 	if err != nil {
 		return errors.Wrapf(err, "error checking for ipip tunnel")
 	}
@@ -76,8 +76,10 @@ func (s *Server) updateIPConnectivity(dst net.IPNet, otherNodeIP net.IP, IsWithd
 	}
 
 	if IsWithdraw {
-		return provider.delConnectivity(dst, otherNodeIP)
+		delete(s.connectivityMap, cn.String())
+		return provider.delConnectivity(cn)
 	} else {
-		return provider.addConnectivity(dst, otherNodeIP)
+		s.connectivityMap[cn.String()] = cn
+		return provider.addConnectivity(cn)
 	}
 }
