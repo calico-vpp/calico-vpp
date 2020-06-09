@@ -16,8 +16,6 @@
 package routing
 
 import (
-	"net"
-
 	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/vpplink"
 	"github.com/calico-vpp/vpplink/types"
@@ -40,15 +38,15 @@ func newIPIPProvider(s *Server) (p *ipipProvider) {
 	return p
 }
 
-func (p ipipProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP) error {
+func (p ipipProvider) addConnectivity(cn *NodeConnectivity) error {
 	p.l.Debugf("Adding ipip Tunnel to VPP")
-	if _, found := p.ipipIfs[destNodeAddr.String()]; !found {
-		nodeIP := p.s.getNodeIP(vpplink.IsIP6(destNodeAddr))
-		p.l.Infof("IPIP: Add %s->%s", nodeIP.String(), dst.IP.String())
+	if _, found := p.ipipIfs[cn.NextHop.String()]; !found {
+		nodeIP := p.s.getNodeIP(vpplink.IsIP6(cn.NextHop))
+		p.l.Infof("IPIP: Add %s->%s", nodeIP.String(), cn.Dst.IP.String())
 
-		swIfIndex, err := p.s.vpp.AddIpipTunnel(nodeIP, destNodeAddr, 0)
+		swIfIndex, err := p.s.vpp.AddIpipTunnel(nodeIP, cn.NextHop, 0)
 		if err != nil {
-			return errors.Wrapf(err, "Error adding ipip tunnel %s -> %s", nodeIP.String(), destNodeAddr.String())
+			return errors.Wrapf(err, "Error adding ipip tunnel %s -> %s", nodeIP.String(), cn.NextHop.String())
 		}
 		err = p.s.vpp.InterfaceSetUnnumbered(swIfIndex, config.DataInterfaceSwIfIndex)
 		if err != nil {
@@ -69,15 +67,15 @@ func (p ipipProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP) error 
 			return errors.Wrapf(err, "Error setting ipip interface up")
 		}
 
-		p.ipipIfs[destNodeAddr.String()] = swIfIndex
-		p.l.Infof("IPIP: Added ?->%s %d", dst.IP.String(), swIfIndex)
+		p.ipipIfs[cn.NextHop.String()] = swIfIndex
+		p.l.Infof("IPIP: Added ?->%s %d", cn.Dst.IP.String(), swIfIndex)
 	}
-	swIfIndex := p.ipipIfs[destNodeAddr.String()]
-	p.l.Infof("IPIP: Added ?->%s %d", dst.IP.String(), swIfIndex)
+	swIfIndex := p.ipipIfs[cn.NextHop.String()]
+	p.l.Infof("IPIP: Added ?->%s %d", cn.Dst.IP.String(), swIfIndex)
 
-	p.l.Debugf("Adding ipip tunnel route to %s via swIfIndex %d", dst.IP.String(), swIfIndex)
+	p.l.Debugf("Adding ipip tunnel route to %s via swIfIndex %d", cn.Dst.IP.String(), swIfIndex)
 	return p.s.vpp.RouteAdd(&types.Route{
-		Dst: &dst,
+		Dst: &cn.Dst,
 		Paths: []types.RoutePath{{
 			SwIfIndex: swIfIndex,
 			Gw:        nil,
@@ -85,15 +83,15 @@ func (p ipipProvider) addConnectivity(dst net.IPNet, destNodeAddr net.IP) error 
 	})
 }
 
-func (p ipipProvider) delConnectivity(dst net.IPNet, destNodeAddr net.IP) error {
-	swIfIndex, found := p.ipipIfs[destNodeAddr.String()]
+func (p ipipProvider) delConnectivity(cn *NodeConnectivity) error {
+	swIfIndex, found := p.ipipIfs[cn.NextHop.String()]
 	if !found {
-		p.l.Infof("IPIP: Del unknown %s", destNodeAddr.String())
-		return errors.Errorf("Deleting unknown ipip tunnel %s", destNodeAddr.String())
+		p.l.Infof("IPIP: Del unknown %s", cn.NextHop.String())
+		return errors.Errorf("Deleting unknown ipip tunnel %s", cn.NextHop.String())
 	}
-	p.l.Infof("IPIP: Del ?->%s %d", destNodeAddr.String(), swIfIndex)
+	p.l.Infof("IPIP: Del ?->%s %d", cn.NextHop.String(), swIfIndex)
 	err := p.s.vpp.RouteDel(&types.Route{
-		Dst: &dst,
+		Dst: &cn.Dst,
 		Paths: []types.RoutePath{{
 			SwIfIndex: swIfIndex,
 			Gw:        nil,
@@ -102,6 +100,6 @@ func (p ipipProvider) delConnectivity(dst net.IPNet, destNodeAddr net.IP) error 
 	if err != nil {
 		return errors.Wrapf(err, "Error deleting ipip tunnel route")
 	}
-	delete(p.ipipIfs, destNodeAddr.String())
+	delete(p.ipipIfs, cn.NextHop.String())
 	return nil
 }

@@ -45,22 +45,22 @@ func newFlatL3Provider(s *Server) (p *flatL3Provider) {
 	return p
 }
 
-func (p *flatL3Provider) addConnectivity(dst net.IPNet, destNodeAddr net.IP) error {
-	p.l.Printf("adding route %s to VPP", dst.String())
-	paths := getRoutePaths(destNodeAddr)
+func (p *flatL3Provider) addConnectivity(cn *NodeConnectivity) error {
+	p.l.Printf("adding route %s to VPP", cn.Dst.String())
+	paths := getRoutePaths(cn.NextHop)
 	err := p.s.vpp.RouteAdd(&types.Route{
 		Paths: paths,
-		Dst:   &dst,
+		Dst:   &cn.Dst,
 	})
 	return errors.Wrap(err, "error replacing route")
 }
 
-func (p *flatL3Provider) delConnectivity(dst net.IPNet, destNodeAddr net.IP) error {
-	p.l.Debugf("removing route %s from VPP", dst.String())
-	paths := getRoutePaths(destNodeAddr)
+func (p *flatL3Provider) delConnectivity(cn *NodeConnectivity) error {
+	p.l.Debugf("removing route %s from VPP", cn.Dst.String())
+	paths := getRoutePaths(cn.NextHop)
 	err := p.s.vpp.RouteDel(&types.Route{
 		Paths: paths,
-		Dst:   &dst,
+		Dst:   &cn.Dst,
 	})
 	return errors.Wrap(err, "error deleting route")
 }

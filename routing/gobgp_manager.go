@@ -68,24 +68,34 @@ type IpamCache interface {
 	sync() error
 }
 
+type NodeConnectivity struct {
+	Dst     net.IPNet
+	NextHop net.IP
+}
+
+func (cn *NodeConnectivity) String() string {
+	return fmt.Sprintf("%s-%s", cn.Dst.String(), cn.NextHop.String())
+}
+
 type Server struct {
-	t              tomb.Tomb
-	bgpServer      *bgpserver.BgpServer
-	client         *calicocli.Client
-	clientv3       calicocliv3.Interface
-	defaultBGPConf *calicov3.BGPConfigurationSpec
-	ipv4           net.IP
-	ipv6           net.IP
-	ipv4Net        *net.IPNet
-	ipv6Net        *net.IPNet
-	hasV4          bool
-	hasV6          bool
-	ipam           IpamCache
-	reloadCh       chan string
-	prefixReady    chan int
-	vpp            *vpplink.VppLink
-	l              *logrus.Entry
-	servicesServer *services.Server
+	t               tomb.Tomb
+	bgpServer       *bgpserver.BgpServer
+	client          *calicocli.Client
+	clientv3        calicocliv3.Interface
+	defaultBGPConf  *calicov3.BGPConfigurationSpec
+	ipv4            net.IP
+	ipv6            net.IP
+	ipv4Net         *net.IPNet
+	ipv6Net         *net.IPNet
+	hasV4           bool
+	hasV6           bool
+	ipam            IpamCache
+	reloadCh        chan string
+	prefixReady     chan int
+	vpp             *vpplink.VppLink
+	l               *logrus.Entry
+	servicesServer  *services.Server
+	connectivityMap map[string]*NodeConnectivity
 	// Connectivity providers
 	flat  *flatL3Provider
 	ipip  *ipipProvider
@@ -133,20 +143,21 @@ func NewServer(vpp *vpplink.VppLink, ss *services.Server, l *logrus.Entry) (*Ser
 	)
 
 	server := Server{
-		bgpServer:      bgpServer,
-		client:         calicoCli,
-		clientv3:       calicoCliV3,
-		ipv4:           ipv4,
-		ipv6:           ipv6,
-		ipv4Net:        ipv4Net,
-		ipv6Net:        ipv6Net,
-		hasV4:          hasV4,
-		hasV6:          hasV6,
-		reloadCh:       make(chan string),
-		prefixReady:    make(chan int),
-		vpp:            vpp,
-		l:              l,
-		servicesServer: ss,
+		bgpServer:       bgpServer,
+		client:          calicoCli,
+		clientv3:        calicoCliV3,
+		ipv4:            ipv4,
+		ipv6:            ipv6,
+		ipv4Net:         ipv4Net,
+		ipv6Net:         ipv6Net,
+		hasV4:           hasV4,
+		hasV6:           hasV6,
+		reloadCh:        make(chan string),
+		prefixReady:     make(chan int),
+		vpp:             vpp,
+		l:               l,
+		servicesServer:  ss,
+		connectivityMap: make(map[string]*NodeConnectivity),
 	}
 	server.flat = newFlatL3Provider(&server)
 	server.ipip = newIPIPProvider(&server)
@@ -496,7 +507,10 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 		return fmt.Errorf("Cannot handle Nlri: %+v", path.Nlri)
 	}
 
-	return s.updateIPConnectivity(dst, otherNodeIP, path.IsWithdraw)
+	return s.updateIPConnectivity(&NodeConnectivity{
+		Dst:     dst,
+		NextHop: otherNodeIP,
+	}, path.IsWithdraw)
 }
 
 // watchBGPPath watches BGP routes from other peers and inject them into
