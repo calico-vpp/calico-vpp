@@ -44,7 +44,7 @@ func (s *Server) watchBGPPeers() error {
 	state := make(map[string]*bgpPeer)
 
 	for {
-		s.l.Debugf("Reconciliating peers...")
+		s.log.Debugf("Reconciliating peers...")
 		peers, err := s.clientv3.BGPPeers().List(context.Background(), options.ListOptions{})
 		if err != nil {
 			return err
@@ -139,7 +139,7 @@ func (s *Server) watchBGPPeers() error {
 				ip := peer.Spec.PeerIP
 				_, ok := state[ip]
 				if !ok {
-					s.l.Warnf("Deleted peer %s not found", ip)
+					s.log.Warnf("Deleted peer %s not found", ip)
 					continue
 				}
 				err := s.deleteBGPPeer(ip)
@@ -204,7 +204,7 @@ func (s *Server) addBGPPeer(ip string, asn uint32) error {
 	if err != nil {
 		return err
 	}
-	s.l.Infof("Adding BGP neighbor: %+v", peer)
+	s.log.Infof("Adding BGP neighbor: %+v", peer)
 	err = s.bgpServer.AddPeer(context.Background(), &bgpapi.AddPeerRequest{Peer: peer})
 	return err
 }
@@ -214,13 +214,13 @@ func (s *Server) updateBGPPeer(ip string, asn uint32) error {
 	if err != nil {
 		return err
 	}
-	s.l.Infof("Updating BGP neighbor: %+v", peer)
+	s.log.Infof("Updating BGP neighbor: %+v", peer)
 	_, err = s.bgpServer.UpdatePeer(context.Background(), &bgpapi.UpdatePeerRequest{Peer: peer})
 	return err
 }
 
 func (s *Server) deleteBGPPeer(ip string) error {
-	s.l.Infof("Deleting BGP neighbor: %s", ip)
+	s.log.Infof("Deleting BGP neighbor: %s", ip)
 	err := s.bgpServer.DeletePeer(context.Background(), &bgpapi.DeletePeerRequest{Address: ip})
 	return err
 }

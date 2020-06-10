@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/calico-vpp/calico-vpp/common"
 	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/vpplink"
 	"github.com/pkg/errors"
@@ -43,6 +44,9 @@ type ServiceProvider interface {
 }
 
 type Server struct {
+	*common.CalicoVppServerData
+	log              *logrus.Entry
+	vpp              *vpplink.VppLink
 	t                tomb.Tomb
 	endpointStore    cache.Store
 	serviceStore     cache.Store
@@ -52,8 +56,6 @@ type Server struct {
 	ipv4             net.IP
 	ipv6             net.IP
 	lock             sync.Mutex
-	log              *logrus.Entry
-	vpp              *vpplink.VppLink
 	vppTapSwIfindex  uint32
 	serviceProvider  ServiceProvider
 }
@@ -212,6 +214,7 @@ func (s *Server) findMatchingEndpoint(service *v1.Service) *v1.Endpoints {
 }
 
 func (s *Server) handleServiceEndpointEvent(service *v1.Service, ep *v1.Endpoints, isWithdrawal bool) {
+	s.BarrierSync()
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	if service != nil && ep == nil {

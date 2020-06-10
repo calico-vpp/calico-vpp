@@ -33,21 +33,21 @@ func (s *Server) watchPrefix() error {
 	// There is no need to react instantly to these changes, and the calico API
 	// doesn't provide a way to watch for changes, so we just poll every minute
 	for {
-		s.l.Infof("Reconciliating prefix affinities...")
+		s.log.Infof("Reconciliating prefix affinities...")
 		newPrefixes, err := s.getAssignedPrefixes()
 		if err != nil {
 			return errors.Wrap(err, "error getting assigned prefixes")
 		}
-		s.l.Debugf("Found %d assigned prefixes", len(newPrefixes))
+		s.log.Debugf("Found %d assigned prefixes", len(newPrefixes))
 		newAssignedPrefixes := make(map[string]bool)
 		var toAdd []*bgpapi.Path
 		for _, prefix := range newPrefixes {
 			if _, found := assignedPrefixes[prefix]; found {
-				s.l.Debugf("Prefix %s is still assigned to us", prefix)
+				s.log.Debugf("Prefix %s is still assigned to us", prefix)
 				assignedPrefixes[prefix] = true     // Prefix is still there, set value to true so we don't delete it
 				newAssignedPrefixes[prefix] = false // Record it in new map
 			} else {
-				s.l.Debugf("New assigned prefix: %s", prefix)
+				s.log.Debugf("New assigned prefix: %s", prefix)
 				newAssignedPrefixes[prefix] = false
 				path, err := s.makePath(prefix, false)
 				if err != nil {
@@ -63,7 +63,7 @@ func (s *Server) watchPrefix() error {
 		var toRemove []*bgpapi.Path
 		for p, stillThere := range assignedPrefixes {
 			if !stillThere {
-				s.l.Infof("Prefix %s is not assigned to us anymore", p)
+				s.log.Infof("Prefix %s is not assigned to us anymore", p)
 				path, err := s.makePath(p, true)
 				if err != nil {
 					return errors.Wrap(err, "error making new path for removed prefix")
@@ -98,7 +98,7 @@ func (s *Server) getAssignedPrefixes() ([]string, error) {
 			return err
 		}
 		for _, block := range blockList.KVPairs {
-			s.l.Debugf("Found assigned prefix: %+v", block)
+			s.log.Debugf("Found assigned prefix: %+v", block)
 			key := block.Key.(model.BlockAffinityKey)
 			value := block.Value.(*model.BlockAffinity)
 			if value.State == model.StateConfirmed && !value.Deleted {

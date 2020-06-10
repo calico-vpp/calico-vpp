@@ -30,14 +30,14 @@ import (
 
 type ipsecProvider struct {
 	ipipIfs map[string][]uint32
-	l       *logrus.Entry
+	log     *logrus.Entry
 	s       *Server
 }
 
 func newIPsecProvider(s *Server) (p *ipsecProvider) {
 	p = &ipsecProvider{
 		ipipIfs: make(map[string][]uint32),
-		l:       s.l.WithField("connectivity", "ipsec"),
+		log:     s.log.WithField("connectivity", "ipsec"),
 		s:       s,
 	}
 	return p
@@ -56,7 +56,7 @@ func (p ipsecProvider) setupTunnelWithIds(i int, j int, destNodeAddr net.IP, nod
 	src[2] += byte(i)
 	dst := net.IP(append([]byte(nil), destNodeAddr.To4()...))
 	dst[2] += byte(j)
-	p.l.Infof("Adding IPsec tunnel from %s to %s", src, dst)
+	p.log.Infof("Adding IPsec tunnel from %s to %s", src, dst)
 	swIfIndex, err := p.setupOneTunnel(src, dst, config.IPSecIkev2Psk)
 	if err != nil {
 		return errors.Wrapf(err, "error configuring ipsec tunnel from %s to %s", src.String(), dst.String())
@@ -132,7 +132,7 @@ func (p ipsecProvider) setupOneTunnel(src, dst net.IP, psk string) (tunSwIfIndex
 		return 0, errors.Wrapf(err, "error configuring IPsec tunnel from %s to %s", src.String(), dst.String())
 	}
 
-	p.l.Infof("IKE: Profile %s = swifindex %d", profile, swIfIndex)
+	p.log.Infof("IKE: Profile %s = swifindex %d", profile, swIfIndex)
 	err = p.s.vpp.SetIKEv2TunnelInterface(profile, swIfIndex)
 	if err != nil {
 		return 0, errors.Wrapf(err, "error configuring IPsec tunnel from %s to %s", src.String(), dst.String())
@@ -140,7 +140,7 @@ func (p ipsecProvider) setupOneTunnel(src, dst net.IP, psk string) (tunSwIfIndex
 
 	// Compare addresses lexicographically to select an initiator
 	if bytes.Compare(src.To4(), dst.To4()) > 0 {
-		p.l.Infof("IKE: Set responder %s->%s", src.String(), dst.String())
+		p.log.Infof("IKE: Set responder %s->%s", src.String(), dst.String())
 		err = p.s.vpp.SetIKEv2Responder(profile, config.DataInterfaceSwIfIndex, dst)
 		if err != nil {
 			return 0, errors.Wrapf(err, "error configuring IPsec tunnel from %s to %s", src.String(), dst.String())
@@ -168,14 +168,14 @@ func (p *ipsecProvider) waitForIPsecSA(profile string, ipipInterface uint32) {
 		time.Sleep(time.Second)
 		iface, err := p.s.vpp.GetInterfaceDetails(ipipInterface)
 		if err != nil {
-			p.l.Errorf("Cannot get IPIP tunnel %d status", ipipInterface)
+			p.log.Errorf("Cannot get IPIP tunnel %d status", ipipInterface)
 			return
 		}
 		if !iface.IsUp {
-			p.l.Debugf("IPIP tunnel %d still down", ipipInterface)
+			p.log.Debugf("IPIP tunnel %d still down", ipipInterface)
 			continue
 		}
-		p.l.Debugf("Profile %s tunnel now up", profile)
+		p.log.Debugf("Profile %s tunnel now up", profile)
 		return
 	}
 }
@@ -200,14 +200,14 @@ func (p ipsecProvider) addConnectivity(cn *NodeConnectivity) (err error) {
 		}
 	}
 	swIfIndices := p.ipipIfs[cn.NextHop.String()]
-	p.l.Infof("IPSEC: ADD %s via %s [%v]", cn.Dst.String(), cn.NextHop.String(), swIfIndices)
+	p.log.Infof("IPSEC: ADD %s via %s [%v]", cn.Dst.String(), cn.NextHop.String(), swIfIndices)
 	e := p.s.vpp.RouteAdd(&types.Route{
 		Dst:   &cn.Dst,
 		Paths: getIPSecRoutePaths(swIfIndices),
 	})
 	if e != nil {
 		err = e
-		p.l.Errorf("Error setting route in VPP: %v", err)
+		p.log.Errorf("Error setting route in VPP: %v", err)
 	}
 	return errors.Wrap(err, "Error configuring routes")
 }
@@ -217,14 +217,14 @@ func (p ipsecProvider) delConnectivity(cn *NodeConnectivity) (err error) {
 	if !found {
 		return errors.Errorf("Deleting unknown ipip tunnel %s", cn.NextHop.String())
 	}
-	p.l.Infof("IPSEC: DEL %s via %s [%v]", cn.Dst.String(), cn.NextHop.String(), swIfIndices)
+	p.log.Infof("IPSEC: DEL %s via %s [%v]", cn.Dst.String(), cn.NextHop.String(), swIfIndices)
 	e := p.s.vpp.RouteDel(&types.Route{
 		Dst:   &cn.Dst,
 		Paths: getIPSecRoutePaths(swIfIndices),
 	})
 	if e != nil {
 		err = e
-		p.l.Errorf("Error deleting route ipip tunnel %v: %v", swIfIndices, err)
+		p.log.Errorf("Error deleting route ipip tunnel %v: %v", swIfIndices, err)
 	}
 	return errors.Wrapf(err, "Error deleting ipip tunnel route")
 	// TODO remove ike profile and teardown tunnel if there are no more routes?
