@@ -22,6 +22,7 @@ import (
 	"syscall"
 
 	pb "github.com/calico-vpp/calico-vpp/cni/proto"
+	"github.com/calico-vpp/calico-vpp/common"
 	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/calico-vpp/routing"
 	"github.com/calico-vpp/calico-vpp/services"
@@ -31,9 +32,10 @@ import (
 )
 
 type Server struct {
+	*common.CalicoVppServerData
 	log             *logrus.Entry
-	grpcServer      *grpc.Server
 	vpp             *vpplink.VppLink
+	grpcServer      *grpc.Server
 	socketListener  net.Listener
 	routingServer   *routing.Server
 	servicesServer  *services.Server
@@ -42,6 +44,7 @@ type Server struct {
 
 func (s *Server) Add(ctx context.Context, in *pb.AddRequest) (*pb.AddReply, error) {
 	s.log.Infof("CNI server got Add request")
+	s.BarrierSync()
 	ifName, contMac, err := s.AddVppInterface(in, true)
 	out := &pb.AddReply{
 		Successful:    true,
@@ -78,6 +81,7 @@ func delKey(in *pb.DelRequest) string {
 
 func (s *Server) Del(ctx context.Context, in *pb.DelRequest) (*pb.DelReply, error) {
 	s.log.Infof("CNI server got Del request")
+	s.BarrierSync()
 	err := s.DelVppInterface(in)
 	if err != nil {
 		s.log.Warnf("Interface deletion failed")

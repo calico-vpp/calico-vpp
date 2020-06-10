@@ -25,24 +25,24 @@ import (
 
 type ipipProvider struct {
 	ipipIfs map[string]uint32
-	l       *logrus.Entry
+	log     *logrus.Entry
 	s       *Server
 }
 
 func newIPIPProvider(s *Server) (p *ipipProvider) {
 	p = &ipipProvider{
 		ipipIfs: make(map[string]uint32),
-		l:       s.l.WithField("connectivity", "ipip"),
+		log:     s.log.WithField("connectivity", "ipip"),
 		s:       s,
 	}
 	return p
 }
 
 func (p ipipProvider) addConnectivity(cn *NodeConnectivity) error {
-	p.l.Debugf("Adding ipip Tunnel to VPP")
+	p.log.Debugf("Adding ipip Tunnel to VPP")
 	if _, found := p.ipipIfs[cn.NextHop.String()]; !found {
 		nodeIP := p.s.getNodeIP(vpplink.IsIP6(cn.NextHop))
-		p.l.Infof("IPIP: Add %s->%s", nodeIP.String(), cn.Dst.IP.String())
+		p.log.Infof("IPIP: Add %s->%s", nodeIP.String(), cn.Dst.IP.String())
 
 		swIfIndex, err := p.s.vpp.AddIpipTunnel(nodeIP, cn.NextHop, 0)
 		if err != nil {
@@ -68,12 +68,12 @@ func (p ipipProvider) addConnectivity(cn *NodeConnectivity) error {
 		}
 
 		p.ipipIfs[cn.NextHop.String()] = swIfIndex
-		p.l.Infof("IPIP: Added ?->%s %d", cn.Dst.IP.String(), swIfIndex)
+		p.log.Infof("IPIP: Added ?->%s %d", cn.Dst.IP.String(), swIfIndex)
 	}
 	swIfIndex := p.ipipIfs[cn.NextHop.String()]
-	p.l.Infof("IPIP: Added ?->%s %d", cn.Dst.IP.String(), swIfIndex)
+	p.log.Infof("IPIP: Added ?->%s %d", cn.Dst.IP.String(), swIfIndex)
 
-	p.l.Debugf("Adding ipip tunnel route to %s via swIfIndex %d", cn.Dst.IP.String(), swIfIndex)
+	p.log.Debugf("Adding ipip tunnel route to %s via swIfIndex %d", cn.Dst.IP.String(), swIfIndex)
 	return p.s.vpp.RouteAdd(&types.Route{
 		Dst: &cn.Dst,
 		Paths: []types.RoutePath{{
@@ -86,10 +86,10 @@ func (p ipipProvider) addConnectivity(cn *NodeConnectivity) error {
 func (p ipipProvider) delConnectivity(cn *NodeConnectivity) error {
 	swIfIndex, found := p.ipipIfs[cn.NextHop.String()]
 	if !found {
-		p.l.Infof("IPIP: Del unknown %s", cn.NextHop.String())
+		p.log.Infof("IPIP: Del unknown %s", cn.NextHop.String())
 		return errors.Errorf("Deleting unknown ipip tunnel %s", cn.NextHop.String())
 	}
-	p.l.Infof("IPIP: Del ?->%s %d", cn.NextHop.String(), swIfIndex)
+	p.log.Infof("IPIP: Del ?->%s %d", cn.NextHop.String(), swIfIndex)
 	err := p.s.vpp.RouteDel(&types.Route{
 		Dst: &cn.Dst,
 		Paths: []types.RoutePath{{

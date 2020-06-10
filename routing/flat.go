@@ -25,8 +25,8 @@ import (
 )
 
 type flatL3Provider struct {
-	l *logrus.Entry
-	s *Server
+	log *logrus.Entry
+	s   *Server
 }
 
 func getRoutePaths(addr net.IP) []types.RoutePath {
@@ -39,14 +39,14 @@ func getRoutePaths(addr net.IP) []types.RoutePath {
 
 func newFlatL3Provider(s *Server) (p *flatL3Provider) {
 	p = &flatL3Provider{
-		l: s.l.WithField("connectivity", "flat"),
-		s: s,
+		log: s.log.WithField("connectivity", "flat"),
+		s:   s,
 	}
 	return p
 }
 
 func (p *flatL3Provider) addConnectivity(cn *NodeConnectivity) error {
-	p.l.Printf("adding route %s to VPP", cn.Dst.String())
+	p.log.Printf("adding route %s to VPP", cn.Dst.String())
 	paths := getRoutePaths(cn.NextHop)
 	err := p.s.vpp.RouteAdd(&types.Route{
 		Paths: paths,
@@ -56,7 +56,7 @@ func (p *flatL3Provider) addConnectivity(cn *NodeConnectivity) error {
 }
 
 func (p *flatL3Provider) delConnectivity(cn *NodeConnectivity) error {
-	p.l.Debugf("removing route %s from VPP", cn.Dst.String())
+	p.log.Debugf("removing route %s from VPP", cn.Dst.String())
 	paths := getRoutePaths(cn.NextHop)
 	err := p.s.vpp.RouteDel(&types.Route{
 		Paths: paths,

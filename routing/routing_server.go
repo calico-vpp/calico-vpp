@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/calico-vpp/calico-vpp/common"
 	"github.com/calico-vpp/calico-vpp/config"
 	"github.com/calico-vpp/calico-vpp/services"
 	"github.com/golang/protobuf/ptypes"
@@ -78,6 +79,9 @@ func (cn *NodeConnectivity) String() string {
 }
 
 type Server struct {
+	*common.CalicoVppServerData
+	log             *logrus.Entry
+	vpp             *vpplink.VppLink
 	t               tomb.Tomb
 	bgpServer       *bgpserver.BgpServer
 	client          *calicocli.Client
@@ -92,8 +96,6 @@ type Server struct {
 	ipam            IpamCache
 	reloadCh        chan string
 	prefixReady     chan int
-	vpp             *vpplink.VppLink
-	l               *logrus.Entry
 	servicesServer  *services.Server
 	connectivityMap map[string]*NodeConnectivity
 	// Connectivity providers
@@ -155,7 +157,7 @@ func NewServer(vpp *vpplink.VppLink, ss *services.Server, l *logrus.Entry) (*Ser
 		reloadCh:        make(chan string),
 		prefixReady:     make(chan int),
 		vpp:             vpp,
-		l:               l,
+		log:             l,
 		servicesServer:  ss,
 		connectivityMap: make(map[string]*NodeConnectivity),
 	}
@@ -182,20 +184,20 @@ func (s *Server) Serve() {
 
 	globalConfig, err := s.getGlobalConfig()
 	if err != nil {
-		s.l.Fatal("cannot get global configuration: ", err)
+		s.log.Fatal("cannot get global configuration: ", err)
 	}
 
 	if err := s.bgpServer.StartBgp(context.Background(), &bgpapi.StartBgpRequest{
 		Global: globalConfig,
 	}); err != nil {
-		s.l.Fatal("failed to start BGP server:", err)
+		s.log.Fatal("failed to start BGP server:", err)
 	}
 
 	if err := s.initialPolicySetting(); err != nil {
-		s.l.Fatal("error configuring initial policies: ", err)
+		s.log.Fatal("error configuring initial policies: ", err)
 	}
 
-	s.ipam = newIPAMCache(s.l.WithFields(logrus.Fields{"subcomponent": "ipam-cache"}), s.clientv3, s.ipamUpdateHandler)
+	s.ipam = newIPAMCache(s.log.WithFields(logrus.Fields{"subcomponent": "ipam-cache"}), s.clientv3, s.ipamUpdateHandler)
 	// sync IPAM and call ipamUpdateHandler
 	s.t.Go(func() error { return fmt.Errorf("syncIPAM: %s", s.ipam.sync()) })
 	// watch prefix assigned and announce to other BGP peers
@@ -219,9 +221,9 @@ func (s *Server) Serve() {
 	<-s.t.Dying()
 
 	if err := s.cleanUpRoutes(); err != nil {
-		s.l.Fatalf("%s, also failed to clean up routes which we injected: %s", s.t.Err(), err)
+		s.log.Fatalf("%s, also failed to clean up routes which we injected: %s", s.t.Err(), err)
 	}
-	s.l.Fatal(s.t.Err())
+	s.log.Fatal(s.t.Err())
 
 }
 
@@ -230,7 +232,7 @@ func isCrossSubnet(gw net.IP, subnet net.IPNet) bool {
 }
 
 func (s *Server) ipamUpdateHandler(pool *calicov3.IPPool, prevPool *calicov3.IPPool) error {
-	s.l.Debugf("Pool %s updated, handler called", pool.Spec.CIDR)
+	s.log.Debugf("Pool %s updated, handler called", pool.Spec.CIDR)
 	// TODO check if we need to change any routes based on VXLAN / IPIPMode config changes
 	if prevPool != nil {
 		return fmt.Errorf("IPPool updates not supported at this time: old: %+v new: %+v", prevPool, pool)
@@ -257,7 +259,7 @@ func (s *Server) getDefaultBGPConfig() (*calicov3.BGPConfigurationSpec, error) {
 	}
 	switch err.(type) {
 	case calicoerr.ErrorResourceDoesNotExist:
-		s.l.Debug("No \"default\" BGP config found, using default options")
+		s.log.Debug("No \"default\" BGP config found, using default options")
 		ret := &calicov3.BGPConfigurationSpec{
 			LogSeverityScreen:     "INFO",
 			NodeToNodeMeshEnabled: &b,
@@ -391,7 +393,7 @@ func (s *Server) watchKernelRoute() error {
 		return err
 	}
 	for update := range ch {
-		s.l.Debugf("kernel update: %s", update)
+		s.log.Debugf("kernel update: %s", update)
 		if update.Table == syscall.RT_TABLE_MAIN &&
 			(update.Protocol == syscall.RTPROT_KERNEL || update.Protocol == syscall.RTPROT_BOOT) {
 			// TODO: handle ipPool deletion. RTM_DELROUTE message
@@ -405,14 +407,14 @@ func (s *Server) watchKernelRoute() error {
 				isWithdrawal = true
 			case syscall.RTM_NEWROUTE:
 			default:
-				s.l.Debugf("unhandled rtm type: %d", update.Type)
+				s.log.Debugf("unhandled rtm type: %d", update.Type)
 				continue
 			}
 			path, err := s.makePath(update.Dst.String(), isWithdrawal)
 			if err != nil {
 				return err
 			}
-			s.l.Debugf("made path from kernel update: %s", path)
+			s.log.Debugf("made path from kernel update: %s", path)
 			if _, err = s.bgpServer.AddPath(context.Background(), &bgpapi.AddPathRequest{
 				TableType: bgpapi.TableType_GLOBAL,
 				Path:      path,
@@ -455,7 +457,7 @@ func (s *Server) loadKernelRoute() error {
 			if err != nil {
 				return err
 			}
-			s.l.Tracef("made path from kernel route: %s", path)
+			s.log.Tracef("made path from kernel route: %s", path)
 			if _, err = s.bgpServer.AddPath(context.Background(), &bgpapi.AddPathRequest{
 				TableType: bgpapi.TableType_GLOBAL,
 				Path:      path,
@@ -476,7 +478,7 @@ func (s *Server) getNexthop(path *bgpapi.Path) string {
 		}
 		if err := ptypes.UnmarshalAny(attr, mpReachAttr); err == nil {
 			if len(mpReachAttr.NextHops) != 1 {
-				s.l.Fatalf("Cannot process more than one Nlri in path attributes: %+v", mpReachAttr)
+				s.log.Fatalf("Cannot process more than one Nlri in path attributes: %+v", mpReachAttr)
 			}
 			return mpReachAttr.NextHops[0]
 		}
@@ -537,16 +539,17 @@ func (s *Server) watchBGPPath() error {
 			},
 			func(path *bgpapi.Path) {
 				if path == nil {
-					s.l.Warnf("nil path update, skipping")
+					s.log.Warnf("nil path update, skipping")
 					return
 				}
-				s.l.Infof("Got path update from %s as %d", path.SourceId, path.SourceAsn)
+				s.log.Infof("Got path update from %s as %d", path.SourceId, path.SourceAsn)
 				if path.NeighborIp == "<nil>" { // Weird GoBGP API behaviour
-					s.l.Debugf("Ignoring internal path")
+					s.log.Debugf("Ignoring internal path")
 					return
 				}
+				s.BarrierSync()
 				if err := s.injectRoute(path); err != nil {
-					s.l.Errorf("cannot inject route: %v", err)
+					s.log.Errorf("cannot inject route: %v", err)
 				}
 			},
 		)
@@ -669,7 +672,7 @@ func (s *Server) updatePrefixSet(paths []*bgpapi.Path) error {
 //      add "192.168.1.0/26..32" to 'host'       set
 //
 func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
-	s.l.Infof("Updating local prefix set with %+v", path)
+	s.log.Infof("Updating local prefix set with %+v", path)
 	ipAddrPrefixNlri := &bgpapi.IPAddressPrefix{}
 	var prefixAddr string = ""
 	var prefixLen uint32 = 0xffff
@@ -711,7 +714,7 @@ func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
 	// Add all contained prefixes to host prefix set, forbidding the export of containers /32s or /128s
 	max := uint32(32)
 	if strings.Contains(prefixAddr, ":") {
-		s.l.Debugf("Address %s detected as v6", prefixAddr)
+		s.log.Debugf("Address %s detected as v6", prefixAddr)
 		max = 128
 	}
 	ps = &bgpapi.DefinedSet{
@@ -757,7 +760,7 @@ func (s *Server) _updatePrefixSet(path *bgpapi.Path) error {
 }
 
 func (s *Server) cleanUpRoutes() error {
-	s.l.Tracef("Clean up injected routes")
+	s.log.Tracef("Clean up injected routes")
 	filter := &netlink.Route{
 		Protocol: RTPROT_GOBGP,
 	}
@@ -776,7 +779,7 @@ func (s *Server) cleanUpRoutes() error {
 }
 
 func (s *Server) announceLocalAddress(addr *net.IPNet) error {
-	s.l.Debugf("Announcing prefix %s in BGP", addr.String())
+	s.log.Debugf("Announcing prefix %s in BGP", addr.String())
 	path, err := s.makePath(addr.String(), false)
 	if err != nil {
 		return errors.Wrap(err, "error making path to announce")
@@ -789,7 +792,7 @@ func (s *Server) announceLocalAddress(addr *net.IPNet) error {
 }
 
 func (s *Server) withdrawLocalAddress(addr *net.IPNet) error {
-	s.l.Debugf("Withdrawing prefix %s from BGP", addr.String())
+	s.log.Debugf("Withdrawing prefix %s from BGP", addr.String())
 	path, err := s.makePath(addr.String(), true)
 	if err != nil {
 		return errors.Wrap(err, "error making path to withdraw")
@@ -809,7 +812,7 @@ func (s *Server) AnnounceLocalAddress(addr *net.IPNet, isWithdrawal bool) {
 		err = s.announceLocalAddress(addr)
 	}
 	if err != nil {
-		s.l.Errorf("Local address %+v announcing failed : %+v", addr, err)
+		s.log.Errorf("Local address %+v announcing failed : %+v", addr, err)
 	}
 }
 
@@ -821,7 +824,7 @@ func (s *Server) OnVppRestart() {
 	for _, cn := range s.connectivityMap {
 		err := s.updateIPConnectivity(cn, false)
 		if err != nil {
-			s.l.Errorf("Error re-injecting connectivity %s : %v", cn.String(), err)
+			s.log.Errorf("Error re-injecting connectivity %s : %v", cn.String(), err)
 		}
 	}
 }
