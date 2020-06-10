@@ -76,10 +76,8 @@ func (s *Server) updateIPConnectivity(cn *NodeConnectivity, IsWithdraw bool) err
 	}
 
 	if IsWithdraw {
-		delete(s.connectivityMap, cn.String())
 		return provider.delConnectivity(cn)
 	} else {
-		s.connectivityMap[cn.String()] = cn
 		return provider.addConnectivity(cn)
 	}
 }

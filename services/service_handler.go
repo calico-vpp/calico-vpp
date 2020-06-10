@@ -76,6 +76,27 @@ func getCalicoNodePortEntry(servicePort *v1.ServicePort, ep *v1.Endpoints, nodeI
 	}, nil
 }
 
+func (p *CalicoServiceProvider) OnVppRestart() {
+	for servicePortName, entry := range p.clusterIPMap {
+		entryID, err := p.vpp.CalicoTranslateAdd(entry)
+		if err != nil {
+			p.log.Errorf("NAT: Error re-injecting entry %s : %v", entry.String(), err)
+		} else {
+			entry.ID = entryID
+			p.clusterIPMap[servicePortName] = entry
+		}
+	}
+	for servicePortName, entry := range p.nodePortMap {
+		entryID, err := p.vpp.CalicoTranslateAdd(entry)
+		if err != nil {
+			p.log.Errorf("NAT: Error re-injecting entry %s : %v", entry.String(), err)
+		} else {
+			entry.ID = entryID
+			p.nodePortMap[servicePortName] = entry
+		}
+	}
+}
+
 func (p *CalicoServiceProvider) AddServicePort(service *v1.Service, ep *v1.Endpoints, isNodePort bool) (err error) {
 	clusterIP := net.ParseIP(service.Spec.ClusterIP)
 	nodeIP := p.s.getNodeIP(vpplink.IsIP6(clusterIP))

@@ -507,10 +507,17 @@ func (s *Server) injectRoute(path *bgpapi.Path) error {
 		return fmt.Errorf("Cannot handle Nlri: %+v", path.Nlri)
 	}
 
-	return s.updateIPConnectivity(&NodeConnectivity{
+	cn := &NodeConnectivity{
 		Dst:     dst,
 		NextHop: otherNodeIP,
-	}, path.IsWithdraw)
+	}
+	err := s.updateIPConnectivity(cn, path.IsWithdraw)
+	if path.IsWithdraw {
+		delete(s.connectivityMap, cn.String())
+	} else {
+		s.connectivityMap[cn.String()] = cn
+	}
+	return err
 }
 
 // watchBGPPath watches BGP routes from other peers and inject them into
@@ -808,4 +815,13 @@ func (s *Server) AnnounceLocalAddress(addr *net.IPNet, isWithdrawal bool) {
 
 func (s *Server) Stop() {
 	s.t.Kill(errors.Errorf("GracefulStop"))
+}
+
+func (s *Server) OnVppRestart() {
+	for _, cn := range s.connectivityMap {
+		err := s.updateIPConnectivity(cn, false)
+		if err != nil {
+			s.l.Errorf("Error re-injecting connectivity %s : %v", cn.String(), err)
+		}
+	}
 }

@@ -31,6 +31,7 @@ const (
 	VppAPISocket           = "/var/run/vpp/vpp-api.sock"
 	VppManagerStatusFile   = "/var/run/vpp/vppmanagerstatus"
 	VppManagerTapIdxFile   = "/var/run/vpp/vppmanagertap0"
+	CalicoVppPidFile       = "/var/run/vpp/calico_vpp.pid"
 
 	VppSideMacAddressString       = "02:00:00:00:00:02"
 	ContainerSideMacAddressString = "02:00:00:00:00:01"

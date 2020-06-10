@@ -39,6 +39,7 @@ type ServiceProvider interface {
 	Init() error
 	AddServicePort(service *v1.Service, ep *v1.Endpoints, isNodePort bool) error
 	DelServicePort(service *v1.Service, ep *v1.Endpoints, isNodePort bool) error
+	OnVppRestart()
 }
 
 type Server struct {
@@ -168,6 +169,10 @@ func (s *Server) AddDelService(service *v1.Service, ep *v1.Endpoints, isWithdraw
 	} else {
 		return s.serviceProvider.AddServicePort(service, ep, isNodePort)
 	}
+}
+
+func (s *Server) OnVppRestart() {
+	s.serviceProvider.OnVppRestart()
 }
 
 func (s *Server) findMatchingService(ep *v1.Endpoints) *v1.Service {

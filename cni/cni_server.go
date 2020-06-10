@@ -42,7 +42,7 @@ type Server struct {
 
 func (s *Server) Add(ctx context.Context, in *pb.AddRequest) (*pb.AddReply, error) {
 	s.log.Infof("CNI server got Add request")
-	ifName, contMac, err := s.AddVppInterface(in)
+	ifName, contMac, err := s.AddVppInterface(in, true)
 	out := &pb.AddReply{
 		Successful:    true,
 		InterfaceName: ifName,
@@ -57,6 +57,15 @@ func (s *Server) Add(ctx context.Context, in *pb.AddRequest) (*pb.AddReply, erro
 		s.log.Infof("Interface creation successful: %s", ifName)
 	}
 	return out, nil
+}
+
+func (p *Server) OnVppRestart() {
+	for name, in := range p.podInterfaceMap {
+		_, _, err := p.AddVppInterface(in, false)
+		if err != nil {
+			p.log.Errorf("Error re-injecting interface %s : %v", name, err)
+		}
+	}
 }
 
 func addKey(in *pb.AddRequest) string {

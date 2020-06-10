@@ -197,7 +197,7 @@ func (s *Server) announceLocalAddress(addr *net.IPNet, isWithdrawal bool) {
 	s.routingServer.AnnounceLocalAddress(addr, isWithdrawal)
 }
 
-func (s *Server) configureNamespaceSideTap(args *pb.AddRequest, swIfIndex uint32, contTapName string, contTapMac *string) func(hostNS ns.NetNS) error {
+func (s *Server) configureNamespaceSideTap(args *pb.AddRequest, swIfIndex uint32, contTapName string, contTapMac *string, doHostSideConf bool) func(hostNS ns.NetNS) error {
 	return func(hostNS ns.NetNS) error {
 		contTap, err := netlink.LinkByName(contTapName)
 		if err != nil {
@@ -207,9 +207,36 @@ func (s *Server) configureNamespaceSideTap(args *pb.AddRequest, swIfIndex uint32
 		// Fetch the MAC from the container tap. This is needed by Calico.
 		*contTapMac = contTap.Attrs().HardwareAddr.String()
 		s.log.WithField("MAC", *contTapMac).Debug("Found MAC for container tap")
+		hasv4, hasv6 := getIpFamilies(args)
+
+		/* We need to update dummy IPs in routes too
+		   TODO: delete when switching to TUN */
+		if !doHostSideConf && hasv4 {
+			routes, err := netlink.RouteList(contTap, netlink.FAMILY_V4)
+			if err != nil {
+				s.log.Errorf("SR:Error getting v4 routes %v", err)
+			}
+			for _, r := range routes {
+				err := netlink.RouteDel(&r)
+				if err != nil {
+					s.log.Errorf("SR:Error deleting v4 route %v : %v", r, err)
+				}
+			}
+		}
+		if !doHostSideConf && hasv6 {
+			routes, err := netlink.RouteList(contTap, netlink.FAMILY_V6)
+			if err != nil {
+				s.log.Errorf("SR:Error getting v6 routes %v", err)
+			}
+			for _, r := range routes {
+				err := netlink.RouteDel(&r)
+				if err != nil {
+					s.log.Errorf("SR:Error deleting v6 route %v : %v", r, err)
+				}
+			}
+		}
 
 		// Do the per-IP version set-up.  Add gateway routes etc.
-		hasv4, hasv6 := getIpFamilies(args)
 		if hasv4 {
 			s.log.Infof("Tap %d in NS has v4", swIfIndex)
 			// Add static neighbor entry for the VPP side of the tap
@@ -242,19 +269,21 @@ func (s *Server) configureNamespaceSideTap(args *pb.AddRequest, swIfIndex uint32
 
 		if hasv6 {
 			s.log.Infof("Tap %d in NS has v6", swIfIndex)
-			// Make sure ipv6 is enabled in the container/pod network namespace.
-			// Without these sysctls enabled, interfaces will come up but they won't get a link local IPv6 address
-			// which is required to add the default IPv6 route.
-			if err = writeProcSys("/proc/sys/net/ipv6/conf/all/disable_ipv6", "0"); err != nil {
-				return fmt.Errorf("failed to set net.ipv6.conf.all.disable_ipv6=0: %s", err)
-			}
+			if doHostSideConf {
+				// Make sure ipv6 is enabled in the container/pod network namespace.
+				// Without these sysctls enabled, interfaces will come up but they won't get a link local IPv6 address
+				// which is required to add the default IPv6 route.
+				if err = writeProcSys("/proc/sys/net/ipv6/conf/all/disable_ipv6", "0"); err != nil {
+					return fmt.Errorf("failed to set net.ipv6.conf.all.disable_ipv6=0: %s", err)
+				}
 
-			if err = writeProcSys("/proc/sys/net/ipv6/conf/default/disable_ipv6", "0"); err != nil {
-				return fmt.Errorf("failed to set net.ipv6.conf.default.disable_ipv6=0: %s", err)
-			}
+				if err = writeProcSys("/proc/sys/net/ipv6/conf/default/disable_ipv6", "0"); err != nil {
+					return fmt.Errorf("failed to set net.ipv6.conf.default.disable_ipv6=0: %s", err)
+				}
 
-			if err = writeProcSys("/proc/sys/net/ipv6/conf/lo/disable_ipv6", "0"); err != nil {
-				return fmt.Errorf("failed to set net.ipv6.conf.lo.disable_ipv6=0: %s", err)
+				if err = writeProcSys("/proc/sys/net/ipv6/conf/lo/disable_ipv6", "0"); err != nil {
+					return fmt.Errorf("failed to set net.ipv6.conf.lo.disable_ipv6=0: %s", err)
+				}
 			}
 			// FIXME : This isn't necessary if vpp can list link local ips
 			// Add static neighbor entry for the VPP side of the tap
@@ -307,6 +336,10 @@ func (s *Server) configureNamespaceSideTap(args *pb.AddRequest, swIfIndex uint32
 			}
 		}
 
+		if !doHostSideConf {
+			return nil
+		}
+
 		// Now add the IPs to the container side of the tap.
 		for _, addr := range args.GetContainerIps() {
 			addr := &net.IPNet{
@@ -341,7 +374,7 @@ func getIpFamilies(args *pb.AddRequest) (hasv4 bool, hasv6 bool) {
 }
 
 // DoVppNetworking performs the networking for the given config and IPAM result
-func (s *Server) AddVppInterface(args *pb.AddRequest) (ifName, contTapMac string, err error) {
+func (s *Server) AddVppInterface(args *pb.AddRequest, doHostSideConf bool) (ifName, contTapMac string, err error) {
 	// Select the first 11 characters of the containerID for the host veth.
 	contTapName := args.GetInterfaceName()
 	netns := args.GetNetns()
@@ -376,7 +409,7 @@ func (s *Server) AddVppInterface(args *pb.AddRequest) (ifName, contTapMac string
 	if config.TapGSOEnabled {
 		tap.Flags |= types.TapFlagGSO | types.TapGROCoalesce
 	}
-	swIfIndex, err := s.vpp.CreateTapV2(tap)
+	swIfIndex, err := s.vpp.CreateOrAttachTapV2(tap)
 	if err != nil {
 		return "", "", s.tapErrorCleanup(contTapName, netns, err, "Error creating Tap")
 	}
@@ -413,7 +446,7 @@ func (s *Server) AddVppInterface(args *pb.AddRequest) (ifName, contTapMac string
 		}
 	}
 
-	err = ns.WithNetNSPath(netns, s.configureNamespaceSideTap(args, swIfIndex, contTapName, &contTapMac))
+	err = ns.WithNetNSPath(netns, s.configureNamespaceSideTap(args, swIfIndex, contTapName, &contTapMac, doHostSideConf))
 	if err != nil {
 		return "", "", s.tapErrorCleanup(contTapName, netns, err, "Error creating or configuring tap")
 	}
