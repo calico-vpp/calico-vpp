@@ -19,6 +19,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -32,6 +33,14 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+var (
+	routingServer *routing.Server
+	cniServer     *cni.Server
+	serviceServer *services.Server
+	vpp           *vpplink.VppLink
+	log           *logrus.Logger
+)
+
 func waitForVppManager() error {
 	for i := 0; i < 20; i++ {
 		dat, err := ioutil.ReadFile(config.VppManagerStatusFile)
@@ -43,8 +52,31 @@ func waitForVppManager() error {
 	return errors.Errorf("Vpp manager not ready after 20 tries")
 }
 
+func writePidToFile() error {
+	pid := strconv.FormatInt(int64(os.Getpid()), 10)
+	return ioutil.WriteFile(config.CalicoVppPidFile, []byte(pid+"\n"), 0400)
+}
+
+func handleVppManagerRestart() {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, syscall.SIGUSR1)
+	for {
+		<-signals
+		waitForVppManager()
+		log.Infof("SR:Vpp restarted")
+		vpp.Reconnect()
+		log.Infof("SR:Vpp reconnected")
+		routingServer.OnVppRestart()
+		log.Infof("SR:Routing")
+		cniServer.OnVppRestart()
+		log.Infof("SR:CNI")
+		serviceServer.OnVppRestart()
+		log.Infof("SR:Service")
+	}
+}
+
 func main() {
-	log := logrus.New()
+	log = logrus.New()
 	log.SetLevel(logrus.DebugLevel)
 	signalChannel := make(chan os.Signal, 2)
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
@@ -55,29 +87,35 @@ func main() {
 		return
 	}
 
+	err = writePidToFile()
+	if err != nil {
+		log.Errorf("Error writing pidfile: %v", err)
+		return
+	}
+
 	err = waitForVppManager()
 	if err != nil {
 		log.Errorf("Vpp Manager not started: %v", err)
 		return
 	}
 
-	vpp, err := vpplink.NewVppLink(config.VppAPISocket, log.WithFields(logrus.Fields{"component": "vpp-api"}))
+	vpp, err = vpplink.NewVppLink(config.VppAPISocket, log.WithFields(logrus.Fields{"component": "vpp-api"}))
 	if err != nil {
 		log.Errorf("Cannot create VPP client: %v", err)
 		return
 	}
 
-	serviceServer, err := services.NewServer(vpp, log.WithFields(logrus.Fields{"component": "services"}))
+	serviceServer, err = services.NewServer(vpp, log.WithFields(logrus.Fields{"component": "services"}))
 	if err != nil {
 		log.Errorf("Failed to create services server")
 		log.Fatal(err)
 	}
-	routingServer, err := routing.NewServer(vpp, serviceServer, log.WithFields(logrus.Fields{"component": "routing"}))
+	routingServer, err = routing.NewServer(vpp, serviceServer, log.WithFields(logrus.Fields{"component": "routing"}))
 	if err != nil {
 		log.Errorf("Failed to create services server")
 		log.Fatal(err)
 	}
-	cniServer, err := cni.NewServer(
+	cniServer, err = cni.NewServer(
 		vpp,
 		routingServer,
 		serviceServer,
@@ -92,6 +130,8 @@ func main() {
 
 	go serviceServer.Serve()
 	go cniServer.Serve()
+
+	go handleVppManagerRestart()
 
 	<-signalChannel
 	log.Infof("SIGINT received, exiting")
