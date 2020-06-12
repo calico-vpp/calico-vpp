@@ -36,6 +36,10 @@ var (
 	barrierCond *sync.Cond
 )
 
+type Stringable interface {
+	String() string
+}
+
 type CalicoVppServer interface {
 	BarrierSync()
 	OnVppRestart()
@@ -86,4 +90,20 @@ func HandleVppManagerRestart(log *logrus.Logger, vpp *vpplink.VppLink, servers .
 		barrierCond.L.Unlock()
 		barrierCond.Broadcast()
 	}
+}
+
+func SafeFormat(e Stringable) string {
+	if e == nil {
+		return ""
+	} else {
+		return e.String()
+	}
+}
+
+func FormatSlice(lst []Stringable) string {
+	strLst := make([]string, 0, len(lst))
+	for _, e := range lst {
+		strLst = append(strLst, e.String())
+	}
+	return strings.Join(strLst, ", ")
 }
