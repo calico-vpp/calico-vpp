@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"syscall"
 
 	pb "github.com/calico-vpp/calico-vpp/cni/proto"
@@ -42,8 +43,35 @@ type Server struct {
 	podInterfaceMap map[string]*pb.AddRequest
 }
 
+func formatIP(ip *pb.IP) string {
+	if ip == nil {
+		return "*"
+	} else {
+		i := net.IP(ip.Ip)
+		return i.String()
+	}
+
+}
+
+func formatIPNet(ipNet *pb.IPNet) string {
+	if ipNet == nil {
+		return "*"
+	} else {
+		return fmt.Sprintf("%s/%d", formatIP(ipNet.Ip), ipNet.PrefixLen)
+	}
+}
+
+func formatAddRequest(in *pb.AddRequest) string {
+	lst := in.GetContainerIps()
+	strLst := make([]string, 0, len(lst))
+	for _, e := range lst {
+		strLst = append(strLst, fmt.Sprintf("%s -> %s", formatIPNet(e.Ip), formatIP(e.Gateway)))
+	}
+	return fmt.Sprintf("%s: %s", addKey(in), strings.Join(strLst, ", "))
+}
+
 func (s *Server) Add(ctx context.Context, in *pb.AddRequest) (*pb.AddReply, error) {
-	s.log.Infof("CNI server got Add request")
+	s.log.Infof("Add request %s", formatAddRequest(in))
 	s.BarrierSync()
 	ifName, contMac, err := s.AddVppInterface(in, true)
 	out := &pb.AddReply{
@@ -52,12 +80,12 @@ func (s *Server) Add(ctx context.Context, in *pb.AddRequest) (*pb.AddReply, erro
 		ContainerMac:  contMac,
 	}
 	if err != nil {
-		s.log.Warnf("Interface creation failed")
+		s.log.Errorf("Interface add failed %s : %v", formatAddRequest(in), err)
 		out.Successful = false
 		out.ErrorMessage = err.Error()
 	} else {
 		s.podInterfaceMap[addKey(in)] = in
-		s.log.Infof("Interface creation successful: %s", ifName)
+		s.log.Infof("Interface add successful: %s", formatAddRequest(in))
 	}
 	return out, nil
 }
@@ -80,18 +108,18 @@ func delKey(in *pb.DelRequest) string {
 }
 
 func (s *Server) Del(ctx context.Context, in *pb.DelRequest) (*pb.DelReply, error) {
-	s.log.Infof("CNI server got Del request")
+	s.log.Infof("Del request %s", delKey(in))
 	s.BarrierSync()
 	err := s.DelVppInterface(in)
 	if err != nil {
-		s.log.Warnf("Interface deletion failed")
+		s.log.Warnf("Interface del failed %s : %v", delKey(in), err)
 		return &pb.DelReply{
 			Successful:   false,
 			ErrorMessage: err.Error(),
 		}, nil
 	}
 	delete(s.podInterfaceMap, delKey(in))
-	s.log.Infof("Interface deletion successful")
+	s.log.Infof("Interface del successful %s", delKey(in))
 	return &pb.DelReply{
 		Successful: true,
 	}, nil
@@ -119,13 +147,13 @@ func NewServer(v *vpplink.VppLink, rs *routing.Server, ss *services.Server, l *l
 		podInterfaceMap: make(map[string]*pb.AddRequest),
 	}
 	pb.RegisterCniDataplaneServer(server.grpcServer, server)
-	l.Infof("CNI server starting")
+	l.Infof("Server starting")
 	return server, nil
 }
 
 func (s *Server) Serve() {
 	err := s.grpcServer.Serve(s.socketListener)
 	if err != nil {
-		s.log.Fatalf("failed to serve: %v", err)
+		s.log.Fatalf("Failed to serve: %v", err)
 	}
 }
