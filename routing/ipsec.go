@@ -56,7 +56,7 @@ func (p ipsecProvider) setupTunnelWithIds(i int, j int, destNodeAddr net.IP, nod
 	src[2] += byte(i)
 	dst := net.IP(append([]byte(nil), destNodeAddr.To4()...))
 	dst[2] += byte(j)
-	p.log.Infof("Adding IPsec tunnel from %s to %s", src, dst)
+	p.log.Infof("ROUTING: Adding IPsec tunnel %s -> %s", src, dst)
 	swIfIndex, err := p.setupOneTunnel(src, dst, config.IPSecIkev2Psk)
 	if err != nil {
 		return errors.Wrapf(err, "error configuring ipsec tunnel from %s to %s", src.String(), dst.String())

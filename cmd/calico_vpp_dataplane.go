@@ -29,14 +29,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// var (
-// 	routingServer *routing.Server
-// 	cniServer     *cni.Server
-// 	serviceServer *services.Server
-// 	vpp           *vpplink.VppLink
-// 	log           *logrus.Logger
-// )
-
 func main() {
 	log := logrus.New()
 	log.SetLevel(logrus.DebugLevel)
