@@ -53,12 +53,25 @@ func getCalicoEntry(servicePort *v1.ServicePort, ep *v1.Endpoints, clusterIP net
 	if err != nil {
 		return nil, errors.Wrapf(err, "Error determinig target port")
 	}
+	backendIPs := getServiceBackendIPs(servicePort, ep)
+	backends := make([]types.CalicoEndpointTuple, 0, len(backendIPs))
+	for _, backendIP := range backendIPs {
+		backends = append(backends, types.CalicoEndpointTuple{
+			SrcEndpoint: types.CalicoEndpoint{},
+			DstEndpoint: types.CalicoEndpoint{
+				Port: uint16(targetPort),
+				IP: backendIP,
+			},
+		})
+	}
 	return &types.CalicoTranslateEntry{
-		SrcPort:    uint16(servicePort.Port),
-		Vip:        clusterIP,
 		Proto:      getServicePortProto(servicePort.Protocol),
-		DestPort:   uint16(targetPort),
-		BackendIPs: getServiceBackendIPs(servicePort, ep),
+		Endpoint:   types.CalicoEndpoint{
+			Port: uint16(servicePort.Port),
+			IP:   clusterIP,
+		},
+		Backends: backends,
+		IsRealIP:     false,
 	}, nil
 }
 
@@ -67,12 +80,27 @@ func getCalicoNodePortEntry(servicePort *v1.ServicePort, ep *v1.Endpoints, nodeI
 	if err != nil {
 		return nil, errors.Wrapf(err, "Error determinig target port")
 	}
+	backendIPs := getServiceBackendIPs(servicePort, ep)
+	backends := make([]types.CalicoEndpointTuple, 0, len(backendIPs))
+	for _, backendIP := range backendIPs {
+		backends = append(backends, types.CalicoEndpointTuple{
+			SrcEndpoint: types.CalicoEndpoint{
+				IP: nodeIP,
+			},
+			DstEndpoint: types.CalicoEndpoint{
+				Port: uint16(targetPort),
+				IP: backendIP,
+			},
+		})
+	}
 	return &types.CalicoTranslateEntry{
-		SrcPort:    uint16(servicePort.NodePort),
-		Vip:        nodeIP,
 		Proto:      getServicePortProto(servicePort.Protocol),
-		DestPort:   uint16(targetPort),
-		BackendIPs: getServiceBackendIPs(servicePort, ep),
+		Endpoint:   types.CalicoEndpoint{
+			Port: uint16(servicePort.NodePort),
+			IP:   nodeIP,
+		},
+		Backends: backends,
+		IsRealIP:     true,
 	}, nil
 }
 
