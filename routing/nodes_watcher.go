@@ -39,6 +39,10 @@ type node struct {
 	SweepFlag bool
 }
 
+func (s *Server) isMeshMode() (bool, error) {
+	return *s.defaultBGPConf.NodeToNodeMeshEnabled, nil
+}
+
 func nodeSpecCopy(s *calicov3.NodeSpec) *calicov3.NodeSpec {
 	r := &calicov3.NodeSpec{
 		IPv4VXLANTunnelAddr: s.IPv4VXLANTunnelAddr,

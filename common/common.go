@@ -80,7 +80,10 @@ func HandleVppManagerRestart(log *logrus.Logger, vpp *vpplink.VppLink, servers .
 		WaitForVppManager()
 		log.Infof("SR:Vpp restarted")
 		barrier = true
-		vpp.Reconnect()
+		err := vpp.Reconnect()
+		if err != nil {
+			log.Errorf("Reconnection failed %v", err)
+		}
 		for i, srv := range servers {
 			srv.OnVppRestart()
 			log.Infof("SR:server %d restarted", i)

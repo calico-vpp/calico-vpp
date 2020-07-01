@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package routing
+package connectivity
 
 import (
 	"net"
@@ -21,12 +21,10 @@ import (
 	"github.com/calico-vpp/vpplink"
 	"github.com/calico-vpp/vpplink/types"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 )
 
-type flatL3Provider struct {
-	log *logrus.Entry
-	s   *Server
+type FlatL3Provider struct {
+	*ConnectivityProviderData
 }
 
 func getRoutePaths(addr net.IP) []types.RoutePath {
@@ -37,28 +35,24 @@ func getRoutePaths(addr net.IP) []types.RoutePath {
 	}}
 }
 
-func newFlatL3Provider(s *Server) (p *flatL3Provider) {
-	p = &flatL3Provider{
-		log: s.log.WithField("connectivity", "flat"),
-		s:   s,
-	}
-	return p
+func NewFlatL3Provider(d *ConnectivityProviderData) *FlatL3Provider {
+	return &FlatL3Provider{d}
 }
 
-func (p *flatL3Provider) addConnectivity(cn *NodeConnectivity) error {
+func (p *FlatL3Provider) AddConnectivity(cn *NodeConnectivity) error {
 	p.log.Printf("adding route %s to VPP", cn.Dst.String())
 	paths := getRoutePaths(cn.NextHop)
-	err := p.s.vpp.RouteAdd(&types.Route{
+	err := p.vpp.RouteAdd(&types.Route{
 		Paths: paths,
 		Dst:   &cn.Dst,
 	})
 	return errors.Wrap(err, "error replacing route")
 }
 
-func (p *flatL3Provider) delConnectivity(cn *NodeConnectivity) error {
+func (p *FlatL3Provider) DelConnectivity(cn *NodeConnectivity) error {
 	p.log.Debugf("removing route %s from VPP", cn.Dst.String())
 	paths := getRoutePaths(cn.NextHop)
-	err := p.s.vpp.RouteDel(&types.Route{
+	err := p.vpp.RouteDel(&types.Route{
 		Paths: paths,
 		Dst:   &cn.Dst,
 	})

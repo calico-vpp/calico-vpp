@@ -46,6 +46,7 @@ const (
 	IPSecIkev2PskEnvVar       = "CALICOVPP_IPSEC_IKEV2_PSK"
 	TapRxModeEnvVar           = "CALICOVPP_TAP_RX_MODE"
 	BgpLogLevelEnvVar         = "CALICO_BGP_LOGSEVERITYSCREEN"
+	LogLevelEnvVar            = "CALICO_LOG_LEVEL"
 )
 
 var (
@@ -58,6 +59,7 @@ var (
 	IPSecIkev2Psk     = ""
 	TapRxMode         = types.DefaultRxMode
 	BgpLogLevel       = logrus.InfoLevel
+	LogLevel          = logrus.InfoLevel
 	NodeName          = ""
 )
 
@@ -69,6 +71,15 @@ func LoadConfig(log *logrus.Logger) (err error) {
 			log.WithError(err).Error("Failed to parse BGP loglevel: %s, defaulting to info", conf)
 		} else {
 			BgpLogLevel = loglevel
+		}
+	}
+
+	if conf := os.Getenv(LogLevelEnvVar); conf != "" {
+		loglevel, err := logrus.ParseLevel(conf)
+		if err != nil {
+			log.WithError(err).Error("Failed to parse loglevel: %s, defaulting to info", conf)
+		} else {
+			LogLevel = loglevel
 		}
 	}
 
