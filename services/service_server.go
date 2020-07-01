@@ -28,12 +28,13 @@ import (
 	"github.com/projectcalico/libcalico-go/lib/options"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
-	"gopkg.in/tomb.v2"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+
+	 "gopkg.in/tomb.v2"
 )
 
 type ServiceProvider interface {

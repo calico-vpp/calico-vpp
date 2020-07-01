@@ -31,7 +31,6 @@ import (
 
 func main() {
 	log := logrus.New()
-	log.SetLevel(logrus.DebugLevel)
 	signalChannel := make(chan os.Signal, 2)
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
 
@@ -40,6 +39,7 @@ func main() {
 		log.Errorf("Error loading configuration: %v", err)
 		return
 	}
+	log.SetLevel(config.LogLevel)
 
 	err = common.WritePidToFile()
 	if err != nil {

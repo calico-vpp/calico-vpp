@@ -60,18 +60,18 @@ func getCalicoEntry(servicePort *v1.ServicePort, ep *v1.Endpoints, clusterIP net
 			SrcEndpoint: types.CalicoEndpoint{},
 			DstEndpoint: types.CalicoEndpoint{
 				Port: uint16(targetPort),
-				IP: backendIP,
+				IP:   backendIP,
 			},
 		})
 	}
 	return &types.CalicoTranslateEntry{
-		Proto:      getServicePortProto(servicePort.Protocol),
-		Endpoint:   types.CalicoEndpoint{
+		Proto: getServicePortProto(servicePort.Protocol),
+		Endpoint: types.CalicoEndpoint{
 			Port: uint16(servicePort.Port),
 			IP:   clusterIP,
 		},
 		Backends: backends,
-		IsRealIP:     false,
+		IsRealIP: false,
 	}, nil
 }
 
@@ -89,18 +89,18 @@ func getCalicoNodePortEntry(servicePort *v1.ServicePort, ep *v1.Endpoints, nodeI
 			},
 			DstEndpoint: types.CalicoEndpoint{
 				Port: uint16(targetPort),
-				IP: backendIP,
+				IP:   backendIP,
 			},
 		})
 	}
 	return &types.CalicoTranslateEntry{
-		Proto:      getServicePortProto(servicePort.Protocol),
-		Endpoint:   types.CalicoEndpoint{
+		Proto: getServicePortProto(servicePort.Protocol),
+		Endpoint: types.CalicoEndpoint{
 			Port: uint16(servicePort.NodePort),
 			IP:   nodeIP,
 		},
 		Backends: backends,
-		IsRealIP:     true,
+		IsRealIP: true,
 	}, nil
 }
 
@@ -128,7 +128,6 @@ func (p *CalicoServiceProvider) OnVppRestart() {
 func (p *CalicoServiceProvider) AddServicePort(service *v1.Service, ep *v1.Endpoints, isNodePort bool) (err error) {
 	clusterIP := net.ParseIP(service.Spec.ClusterIP)
 	nodeIP := p.s.getNodeIP(vpplink.IsIP6(clusterIP))
-	p.log.Infof("Add ClusterIP")
 	for _, servicePort := range service.Spec.Ports {
 		if entry, err := getCalicoEntry(&servicePort, ep, clusterIP); err == nil {
 			previousEntry, previousFound := p.clusterIPMap[servicePort.Name]
@@ -141,7 +140,7 @@ func (p *CalicoServiceProvider) AddServicePort(service *v1.Service, ep *v1.Endpo
 				entry.ID = entryID
 				p.clusterIPMap[servicePort.Name] = entry
 			} else {
-				p.log.Infof("(unchanged) %s", entry.String())
+				p.log.Debugf("(unchanged) %s", entry.String())
 			}
 		} else {
 			p.log.Warnf("NAT:Error getting service entry: %v", err)
@@ -160,7 +159,7 @@ func (p *CalicoServiceProvider) AddServicePort(service *v1.Service, ep *v1.Endpo
 				entry.ID = entryID
 				p.nodePortMap[servicePort.Name] = entry
 			} else {
-				p.log.Infof("(unchanged) %s", entry.String())
+				p.log.Debugf("(unchanged) %s", entry.String())
 			}
 		} else {
 			p.log.Warnf("NAT:Error getting service entry: %v", err)
@@ -170,7 +169,6 @@ func (p *CalicoServiceProvider) AddServicePort(service *v1.Service, ep *v1.Endpo
 }
 
 func (p *CalicoServiceProvider) DelServicePort(service *v1.Service, ep *v1.Endpoints, isNodePort bool) (err error) {
-	p.log.Infof("Add ClusterIP")
 	for _, servicePort := range service.Spec.Ports {
 		if entry, ok := p.clusterIPMap[servicePort.Name]; ok {
 			p.log.Infof("(del) %s", entry.String())

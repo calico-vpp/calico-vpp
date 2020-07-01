@@ -16,9 +16,13 @@
 package routing
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/calico-vpp/calico-vpp/config"
+	"github.com/golang/protobuf/ptypes"
 	bgpapi "github.com/osrg/gobgp/api"
 	"github.com/pkg/errors"
 	"github.com/projectcalico/libcalico-go/lib/backend/model"
@@ -33,7 +37,7 @@ func (s *Server) watchPrefix() error {
 	// There is no need to react instantly to these changes, and the calico API
 	// doesn't provide a way to watch for changes, so we just poll every minute
 	for {
-		s.log.Infof("Reconciliating prefix affinities...")
+		s.log.Debugf("Reconciliating prefix affinities...")
 		newPrefixes, err := s.getAssignedPrefixes()
 		if err != nil {
 			return errors.Wrap(err, "error getting assigned prefixes")
@@ -56,7 +60,7 @@ func (s *Server) watchPrefix() error {
 				toAdd = append(toAdd, path)
 			}
 		}
-		if err = s.updatePrefixSet(toAdd); err != nil {
+		if err = s.updateBGPPaths(toAdd); err != nil {
 			return errors.Wrap(err, "error adding prefix announcements")
 		}
 		// Remove paths that don't exist anymore
@@ -71,7 +75,7 @@ func (s *Server) watchPrefix() error {
 				toRemove = append(toRemove, path)
 			}
 		}
-		if err = s.updatePrefixSet(toRemove); err != nil {
+		if err = s.updateBGPPaths(toRemove); err != nil {
 			return errors.Wrap(err, "error removing prefix announcements")
 		}
 		assignedPrefixes = newAssignedPrefixes
@@ -119,4 +123,111 @@ func (s *Server) getAssignedPrefixes() ([]string, error) {
 		}
 	}
 	return ps, nil
+}
+
+// TODO rename this
+func (s *Server) updateBGPPaths(paths []*bgpapi.Path) error {
+	for _, path := range paths {
+		err := s.updateOneBGPPath(path)
+		if err != nil {
+			return errors.Wrapf(err, "error processing path %+v", path)
+		}
+	}
+	return nil
+}
+
+// _updatePrefixSet updates 'aggregated' and 'host' prefix-sets
+// we add the exact prefix to 'aggregated' set, and add corresponding longer
+// prefixes to 'host' set.
+//
+// e.g. prefix: "192.168.1.0/26" del: false
+//      add "192.168.1.0/26"     to 'aggregated' set
+//      add "192.168.1.0/26..32" to 'host'       set
+//
+func (s *Server) updateOneBGPPath(path *bgpapi.Path) error {
+	s.log.Infof("Updating local prefix set with %+v", path)
+	ipAddrPrefixNlri := &bgpapi.IPAddressPrefix{}
+	var prefixAddr string = ""
+	var prefixLen uint32 = 0xffff
+	var err error = nil
+	if err := ptypes.UnmarshalAny(path.Nlri, ipAddrPrefixNlri); err == nil {
+		prefixAddr = ipAddrPrefixNlri.Prefix
+		prefixLen = ipAddrPrefixNlri.PrefixLen
+	} else {
+		return fmt.Errorf("Cannot handle Nlri: %+v", path.Nlri)
+	}
+	del := path.IsWithdraw
+	prefix := prefixAddr + "/" + strconv.FormatUint(uint64(prefixLen), 10)
+	// Add path to aggregated prefix set, allowing to export it
+	ps := &bgpapi.DefinedSet{
+		DefinedType: bgpapi.DefinedType_PREFIX,
+		Name:        aggregatedPrefixSetName,
+		Prefixes: []*bgpapi.Prefix{
+			&bgpapi.Prefix{
+				IpPrefix:      prefix,
+				MaskLengthMin: prefixLen,
+				MaskLengthMax: prefixLen,
+			},
+		},
+	}
+	if del {
+		err = s.bgpServer.DeleteDefinedSet(
+			context.Background(),
+			&bgpapi.DeleteDefinedSetRequest{DefinedSet: ps, All: false},
+		)
+	} else {
+		err = s.bgpServer.AddDefinedSet(
+			context.Background(),
+			&bgpapi.AddDefinedSetRequest{DefinedSet: ps},
+		)
+	}
+	if err != nil {
+		return errors.Wrapf(err, "error adding / deleting defined set %+v", ps)
+	}
+	// Add all contained prefixes to host prefix set, forbidding the export of containers /32s or /128s
+	max := uint32(32)
+	if strings.Contains(prefixAddr, ":") {
+		s.log.Debugf("Address %s detected as v6", prefixAddr)
+		max = 128
+	}
+	ps = &bgpapi.DefinedSet{
+		DefinedType: bgpapi.DefinedType_PREFIX,
+		Name:        hostPrefixSetName,
+		Prefixes: []*bgpapi.Prefix{
+			&bgpapi.Prefix{
+				IpPrefix:      prefix,
+				MaskLengthMax: max,
+				MaskLengthMin: prefixLen,
+			},
+		},
+	}
+	if del {
+		err = s.bgpServer.DeleteDefinedSet(
+			context.Background(),
+			&bgpapi.DeleteDefinedSetRequest{DefinedSet: ps, All: false},
+		)
+	} else {
+		err = s.bgpServer.AddDefinedSet(
+			context.Background(),
+			&bgpapi.AddDefinedSetRequest{DefinedSet: ps},
+		)
+	}
+	if err != nil {
+		return errors.Wrapf(err, "error adding / deleting defined set %+v", ps)
+	}
+
+	// Finally add/remove path to/from the main table to annouce it to our peers
+	if del {
+		err = s.bgpServer.DeletePath(context.Background(), &bgpapi.DeletePathRequest{
+			TableType: bgpapi.TableType_GLOBAL,
+			Path:      path,
+		})
+	} else {
+		_, err = s.bgpServer.AddPath(context.Background(), &bgpapi.AddPathRequest{
+			TableType: bgpapi.TableType_GLOBAL,
+			Path:      path,
+		})
+	}
+
+	return errors.Wrapf(err, "error adding / deleting path %+v", path)
 }
