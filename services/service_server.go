@@ -34,7 +34,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 
-	 "gopkg.in/tomb.v2"
+	"gopkg.in/tomb.v2"
 )
 
 type ServiceProvider interface {

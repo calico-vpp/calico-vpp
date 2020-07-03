@@ -39,15 +39,13 @@ type ConnectivityProvider interface {
 }
 
 type ConnectivityProviderData struct {
-	vpp     *vpplink.VppLink
-	log     *logrus.Entry
-	ipv6    net.IP
-	ipv4    net.IP
-	ipv6Net *net.IPNet
-	ipv4Net *net.IPNet
+	vpp  *vpplink.VppLink
+	log  *logrus.Entry
+	ipv6 *net.IP
+	ipv4 *net.IP
 }
 
-func NewConnectivityProviderData(vpp *vpplink.VppLink, log *logrus.Entry, ipv6 net.IP, ipv4 net.IP) *ConnectivityProviderData {
+func NewConnectivityProviderData(vpp *vpplink.VppLink, log *logrus.Entry, ipv6 *net.IP, ipv4 *net.IP) *ConnectivityProviderData {
 	return &ConnectivityProviderData{
 		vpp:  vpp,
 		log:  log,
@@ -58,8 +56,8 @@ func NewConnectivityProviderData(vpp *vpplink.VppLink, log *logrus.Entry, ipv6 n
 
 func (s *ConnectivityProviderData) getNodeIP(isv6 bool) net.IP {
 	if isv6 {
-		return s.ipv6
+		return *s.ipv6
 	} else {
-		return s.ipv4
+		return *s.ipv4
 	}
 }

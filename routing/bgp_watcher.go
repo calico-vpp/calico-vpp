@@ -125,8 +125,10 @@ func (s *Server) updateIPConnectivity(cn *connectivity.NodeConnectivity, IsWithd
 	}
 
 	if IsWithdraw {
+		s.log.Infof("Deleting path %s", cn.String())
 		return provider.DelConnectivity(cn)
 	} else {
+		s.log.Infof("Added path %s", cn.String())
 		return provider.AddConnectivity(cn)
 	}
 }
