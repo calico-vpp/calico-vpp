@@ -39,8 +39,8 @@ type node struct {
 	SweepFlag bool
 }
 
-func (s *Server) isMeshMode() (bool, error) {
-	return *s.defaultBGPConf.NodeToNodeMeshEnabled, nil
+func (s *Server) isMeshMode() bool {
+	return *s.defaultBGPConf.NodeToNodeMeshEnabled
 }
 
 func nodeSpecCopy(s *calicov3.NodeSpec) *calicov3.NodeSpec {
@@ -64,11 +64,9 @@ func nodeSpecCopy(s *calicov3.NodeSpec) *calicov3.NodeSpec {
 	return r
 }
 
-func (s *Server) watchNodes() error {
-	isMesh, err := s.isMeshMode()
-	if err != nil {
-		return errors.Wrap(err, "error determining whether node mesh is enabled")
-	}
+func (s *Server) watchNodes(initialResourceVersion string) error {
+	isMesh := s.isMeshMode()
+	var firstWatch = true
 	for {
 		// TODO: Get and watch only ourselves if there is no mesh
 		s.log.Info("Syncing nodes...")
@@ -86,8 +84,7 @@ func (s *Server) watchNodes() error {
 				return errors.Wrap(err, "error handling node update")
 			}
 			if shouldRestart {
-				s.log.Warnf("Current node configuration changed, restarting")
-				return nil
+				return fmt.Errorf("Current node configuration changed, restarting")
 			}
 		}
 		for name, node := range state {
@@ -97,15 +94,21 @@ func (s *Server) watchNodes() error {
 					return errors.Wrap(err, "error handling node update")
 				}
 				if shouldRestart {
-					s.log.Warnf("Current node configuration changed, restarting")
-					return nil
+					return fmt.Errorf("Current node configuration changed, restarting")
 				}
 			}
 		}
 
+		var resourceVersion string
+		if firstWatch {
+			resourceVersion = initialResourceVersion
+			firstWatch = false
+		} else {
+			resourceVersion = nodes.ResourceVersion
+		}
 		watcher, err := s.clientv3.Nodes().Watch(
 			context.Background(),
-			options.ListOptions{ResourceVersion: nodes.ResourceVersion},
+			options.ListOptions{ResourceVersion: resourceVersion},
 		)
 		if err != nil {
 			return errors.Wrap(err, "cannot watch nodes")
@@ -133,8 +136,7 @@ func (s *Server) watchNodes() error {
 				return errors.Wrap(err, "error handling node update")
 			}
 			if shouldRestart {
-				s.log.Warnf("Current node configuration changed, restarting")
-				return nil
+				return fmt.Errorf("Current node configuration changed, restarting")
 			}
 		}
 	}
